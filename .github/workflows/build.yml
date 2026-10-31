@@ -13,6 +13,10 @@ jobs:
       - name: Apply changes
         run: patch -p1 < cambios.patch
 
+      - name: Fix signing config for debug builds
+        run: |
+          sed -i 's|storeFile = file(keystoreProperties.getProperty("RELEASE_STORE_FILE") ?: "")|if (keystoreProperties.getProperty("RELEASE_STORE_FILE") != null) storeFile = file(keystoreProperties.getProperty("RELEASE_STORE_FILE"))|' app/build.gradle.kts
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
