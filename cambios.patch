@@ -1,0 +1,3828 @@
+diff -ruN a/app/build.gradle.kts b/app/build.gradle.kts
+--- a/app/build.gradle.kts	2026-11-01 07:59:47.445972303 +0000
++++ b/app/build.gradle.kts	2026-11-01 07:59:47.462982186 +0000
+@@ -97,15 +97,10 @@
+     implementation(libs.androidx.compose.material3)
+     implementation(libs.androidx.compose.material.icons.core)
+     implementation(libs.androidx.compose.material.icons.extended)
+-    implementation(libs.retrofit)
+-    implementation(libs.converter.moshi)
+     implementation(libs.kotlinx.coroutines.android)
+     implementation(libs.kotlinx.coroutines.core)
+     implementation(libs.kotlinx.serialization.json)
+     implementation(libs.accompanist.permissions)
+-    implementation(libs.logging.interceptor)
+-    implementation(libs.okhttp)
+-    implementation(libs.moshi.kotlin)
+     implementation(libs.androidx.datastore.preferences)
+     implementation(libs.material)
+     implementation(libs.billing.ktx)
+@@ -125,7 +120,6 @@
+     debugImplementation(libs.androidx.compose.ui.tooling)
+     debugImplementation(libs.androidx.compose.ui.test.manifest)
+     "ksp"(libs.androidx.room.compiler)
+-    "ksp"(libs.moshi.kotlin.codegen)
+ }
+ tasks.register<Copy>("copyReleaseOutputs") {
+     description = "Copies the release APK and AAB files to a single directory for easier access."
+diff -ruN a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+--- a/app/src/main/AndroidManifest.xml	2026-11-01 07:59:47.446307201 +0000
++++ b/app/src/main/AndroidManifest.xml	2026-11-01 07:59:47.463090268 +0000
+@@ -2,7 +2,6 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     xmlns:tools="http://schemas.android.com/tools">
+ 
+-    <uses-permission android:name="android.permission.INTERNET" />
+     <uses-permission android:name="com.android.vending.BILLING" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+     <uses-permission
+diff -ruN a/app/src/main/java/com/ray/flowmeter/data/ConfigBackup.kt b/app/src/main/java/com/ray/flowmeter/data/ConfigBackup.kt
+--- a/app/src/main/java/com/ray/flowmeter/data/ConfigBackup.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/data/ConfigBackup.kt	2026-11-01 07:59:47.463398881 +0000
+@@ -0,0 +1,95 @@
++// Export / import of the user's configuration (limits, schedules, performance mode) to a JSON file.
++package com.ray.flowmeter.data
++
++import android.content.Context
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++import org.json.JSONArray
++import org.json.JSONObject
++
++object ConfigBackup {
++
++    suspend fun export(context: Context): String = withContext(Dispatchers.IO) {
++        PerformanceModeStore.init(context)
++        val limits = FlowMeterDatabase.getDatabase(context).appLimitDao().getAllAppLimitsList()
++        val root = JSONObject()
++        root.put("version", 1)
++
++        val array = JSONArray()
++        for (l in limits) {
++            val o = JSONObject()
++            o.put("packageName", l.packageName)
++            o.put("appName", l.appName)
++            o.put("dataLimit", l.dataLimit)
++            o.put("limitType", l.limitType)
++            o.put("networkType", l.networkType)
++            o.put("wifiDataLimit", l.wifiDataLimit)
++            o.put("mobileDataLimit", l.mobileDataLimit)
++            o.put("isEnabled", l.isEnabled)
++            o.put("isAlwaysBlocked", l.isAlwaysBlocked)
++            o.put("scheduleEnabled", l.scheduleEnabled)
++            o.put("scheduleDays", l.scheduleDays)
++            o.put("scheduleStartMin", l.scheduleStartMin)
++            o.put("scheduleEndMin", l.scheduleEndMin)
++            array.put(o)
++        }
++        root.put("appLimits", array)
++
++        val perf = JSONObject()
++        perf.put("armed", PerformanceModeStore.armed.value)
++        perf.put("games", JSONArray(PerformanceModeStore.games.value.toList()))
++        perf.put("exceptions", JSONArray(PerformanceModeStore.exceptions.value.toList()))
++        root.put("performance", perf)
++        root.toString(2)
++    }
++
++    // Returns how many app limits were restored.
++    suspend fun import(context: Context, json: String): Int = withContext(Dispatchers.IO) {
++        val root = JSONObject(json)
++        val dao = FlowMeterDatabase.getDatabase(context).appLimitDao()
++        var count = 0
++
++        val array = root.optJSONArray("appLimits")
++        if (array != null) {
++            for (i in 0 until array.length()) {
++                val o = array.getJSONObject(i)
++                val pkg = o.getString("packageName")
++                dao.insert(
++                    AppLimit(
++                        packageName = pkg,
++                        appName = o.optString("appName", pkg),
++                        dataLimit = o.optLong("dataLimit", 0L),
++                        limitType = o.optString("limitType", "daily"),
++                        networkType = o.optString("networkType", "both"),
++                        wifiDataLimit = o.optLong("wifiDataLimit", 0L),
++                        mobileDataLimit = o.optLong("mobileDataLimit", 0L),
++                        isEnabled = o.optBoolean("isEnabled", true),
++                        isAlwaysBlocked = o.optBoolean("isAlwaysBlocked", false),
++                        scheduleEnabled = o.optBoolean("scheduleEnabled", false),
++                        scheduleDays = o.optInt("scheduleDays", 127),
++                        scheduleStartMin = o.optInt("scheduleStartMin", 22 * 60),
++                        scheduleEndMin = o.optInt("scheduleEndMin", 7 * 60),
++                    )
++                )
++                count++
++            }
++        }
++
++        val perf = root.optJSONObject("performance")
++        if (perf != null) {
++            PerformanceModeStore.init(context)
++            PerformanceModeStore.setGames(toSet(perf.optJSONArray("games")))
++            PerformanceModeStore.setExceptions(toSet(perf.optJSONArray("exceptions")))
++            PerformanceModeStore.setArmed(perf.optBoolean("armed", false))
++        }
++        count
++    }
++
++    private fun toSet(array: JSONArray?): Set<String> {
++        val out = HashSet<String>()
++        if (array != null) {
++            for (i in 0 until array.length()) out.add(array.getString(i))
++        }
++        return out
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/data/PerformanceModeStore.kt b/app/src/main/java/com/ray/flowmeter/data/PerformanceModeStore.kt
+--- a/app/src/main/java/com/ray/flowmeter/data/PerformanceModeStore.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/data/PerformanceModeStore.kt	2026-11-01 07:59:47.463388505 +0000
+@@ -0,0 +1,55 @@
++// Settings and live state of the performance mode, shared between the screen and the VPN service.
++package com.ray.flowmeter.data
++
++import android.content.Context
++import android.content.SharedPreferences
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.StateFlow
++
++object PerformanceModeStore {
++    private const val PREFS = "performance_mode"
++    private var prefs: SharedPreferences? = null
++
++    private val _armed = MutableStateFlow(false)
++    val armed: StateFlow<Boolean> = _armed
++
++    private val _games = MutableStateFlow<Set<String>>(emptySet())
++    val games: StateFlow<Set<String>> = _games
++
++    private val _exceptions = MutableStateFlow<Set<String>>(emptySet())
++    val exceptions: StateFlow<Set<String>> = _exceptions
++
++    // True only while a listed game is in the foreground and the other apps are being cut.
++    private val _active = MutableStateFlow(false)
++    val active: StateFlow<Boolean> = _active
++
++    @Synchronized
++    fun init(context: Context) {
++        if (prefs != null) return
++        val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
++        prefs = p
++        _armed.value = p.getBoolean("armed", false)
++        _games.value = p.getStringSet("games", emptySet())?.toSet() ?: emptySet()
++        _exceptions.value = p.getStringSet("exceptions", emptySet())?.toSet() ?: emptySet()
++    }
++
++    fun setArmed(value: Boolean) {
++        _armed.value = value
++        prefs?.edit()?.putBoolean("armed", value)?.apply()
++        if (!value) _active.value = false
++    }
++
++    fun setGames(value: Set<String>) {
++        _games.value = value
++        prefs?.edit()?.putStringSet("games", HashSet(value))?.apply()
++    }
++
++    fun setExceptions(value: Set<String>) {
++        _exceptions.value = value
++        prefs?.edit()?.putStringSet("exceptions", HashSet(value))?.apply()
++    }
++
++    fun setActive(value: Boolean) {
++        _active.value = value
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/data/Saved.kt b/app/src/main/java/com/ray/flowmeter/data/Saved.kt
+--- a/app/src/main/java/com/ray/flowmeter/data/Saved.kt	2026-11-01 07:59:47.446808429 +0000
++++ b/app/src/main/java/com/ray/flowmeter/data/Saved.kt	2026-11-01 07:59:47.463351419 +0000
+@@ -22,6 +22,9 @@
+ import androidx.room.Room
+ import androidx.room.RoomDatabase
+ import androidx.room.Update
++import androidx.room.migration.Migration
++import androidx.sqlite.db.SupportSQLiteDatabase
++import java.util.Calendar
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.catch
+ import kotlinx.coroutines.flow.distinctUntilChanged
+@@ -77,7 +80,30 @@
+     val isMobileBlocked: Boolean = false,
+     val isEnabled: Boolean = true,
+     val isAlwaysBlocked: Boolean = false,
+-)
++    // Weekly block schedule. scheduleDays is a bitmask: bit 0 = Monday ... bit 6 = Sunday.
++    // Times are minutes since midnight; if end < start, the block runs overnight.
++    val scheduleEnabled: Boolean = false,
++    val scheduleDays: Int = 127,
++    val scheduleStartMin: Int = 22 * 60,
++    val scheduleEndMin: Int = 7 * 60,
++) {
++    // True when [now] falls inside this app's block schedule.
++    fun isScheduleActive(now: Calendar): Boolean {
++        if (!scheduleEnabled) return false
++        val minutes = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
++        val today = (now.get(Calendar.DAY_OF_WEEK) + 5) % 7 // Monday = 0 ... Sunday = 6
++        val yesterday = (today + 6) % 7
++        fun dayOn(d: Int) = ((scheduleDays shr d) and 1) == 1
++        return when {
++            scheduleStartMin == scheduleEndMin -> dayOn(today) // whole day
++            scheduleStartMin < scheduleEndMin ->
++                dayOn(today) && minutes >= scheduleStartMin && minutes < scheduleEndMin
++            else -> // overnight window
++                (dayOn(today) && minutes >= scheduleStartMin) ||
++                    (dayOn(yesterday) && minutes < scheduleEndMin)
++        }
++    }
++}
+ 
+ @Dao
+ interface AppLimitDao {
+@@ -100,7 +126,7 @@
+     suspend fun getAppLimit(packageName: String): AppLimit?
+ }
+ 
+-@Database(entities = [AppAlert::class, AppLimit::class], version = 8, exportSchema = false)
++@Database(entities = [AppAlert::class, AppLimit::class], version = 9, exportSchema = false)
+ abstract class FlowMeterDatabase : RoomDatabase() {
+     abstract fun appAlertDao(): AppAlertDao
+     abstract fun appLimitDao(): AppLimitDao
+@@ -109,6 +135,16 @@
+         @Volatile
+         private var INSTANCE: FlowMeterDatabase? = null
+ 
++        // Adds the schedule columns without wiping existing limits and alerts.
++        private val MIGRATION_8_9 = object : Migration(8, 9) {
++            override fun migrate(db: SupportSQLiteDatabase) {
++                db.execSQL("ALTER TABLE app_limits ADD COLUMN scheduleEnabled INTEGER NOT NULL DEFAULT 0")
++                db.execSQL("ALTER TABLE app_limits ADD COLUMN scheduleDays INTEGER NOT NULL DEFAULT 127")
++                db.execSQL("ALTER TABLE app_limits ADD COLUMN scheduleStartMin INTEGER NOT NULL DEFAULT 1320")
++                db.execSQL("ALTER TABLE app_limits ADD COLUMN scheduleEndMin INTEGER NOT NULL DEFAULT 420")
++            }
++        }
++
+         fun getDatabase(context: Context): FlowMeterDatabase {
+             return INSTANCE ?: synchronized(this) {
+                 val instance = Room.databaseBuilder(
+@@ -116,6 +152,7 @@
+                     FlowMeterDatabase::class.java,
+                     "flowmeter_database"
+                 )
++                    .addMigrations(MIGRATION_8_9)
+                     .fallbackToDestructiveMigration(dropAllTables = true)
+                     .build()
+                 INSTANCE = instance
+diff -ruN a/app/src/main/java/com/ray/flowmeter/data/UsageLog.kt b/app/src/main/java/com/ray/flowmeter/data/UsageLog.kt
+--- a/app/src/main/java/com/ray/flowmeter/data/UsageLog.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/data/UsageLog.kt	2026-11-01 07:59:47.463376017 +0000
+@@ -0,0 +1,129 @@
++// Own lightweight log of hourly traffic per app. It is kept outside the Room database on purpose,
++// so it can evolve on its own and never affects the limits and alerts tables.
++package com.ray.flowmeter.data
++
++import android.content.Context
++import android.database.sqlite.SQLiteDatabase
++import android.database.sqlite.SQLiteOpenHelper
++import java.util.Calendar
++
++class UsageLogStore private constructor(context: Context) :
++    SQLiteOpenHelper(context.applicationContext, "usage_log.db", null, 1) {
++
++    data class Snap(val day: Long, val wifi: Long, val mobile: Long)
++
++    override fun onCreate(db: SQLiteDatabase) {
++        db.execSQL(
++            "CREATE TABLE hourly_usage (pkg TEXT NOT NULL, name TEXT NOT NULL, bucket INTEGER NOT NULL, " +
++                "wifi INTEGER NOT NULL DEFAULT 0, mobile INTEGER NOT NULL DEFAULT 0, bg INTEGER NOT NULL DEFAULT 0, " +
++                "PRIMARY KEY (pkg, bucket))"
++        )
++        db.execSQL("CREATE INDEX idx_hourly_bucket ON hourly_usage (bucket)")
++        db.execSQL("CREATE TABLE snapshot (pkg TEXT NOT NULL PRIMARY KEY, day INTEGER NOT NULL, wifi INTEGER NOT NULL, mobile INTEGER NOT NULL)")
++        db.execSQL("CREATE TABLE meta (k TEXT NOT NULL PRIMARY KEY, v INTEGER NOT NULL)")
++    }
++
++    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
++        // Nothing to migrate yet.
++    }
++
++    @Synchronized
++    fun addUsage(pkg: String, name: String, bucket: Long, wifi: Long, mobile: Long, bg: Long) {
++        val db = writableDatabase
++        db.execSQL(
++            "INSERT OR IGNORE INTO hourly_usage (pkg, name, bucket) VALUES (?, ?, ?)",
++            arrayOf<Any?>(pkg, name, bucket)
++        )
++        db.execSQL(
++            "UPDATE hourly_usage SET wifi = wifi + ?, mobile = mobile + ?, bg = bg + ?, name = ? WHERE pkg = ? AND bucket = ?",
++            arrayOf<Any?>(wifi, mobile, bg, name, pkg, bucket)
++        )
++    }
++
++    @Synchronized
++    fun backgroundInBucket(pkg: String, bucket: Long): Long {
++        readableDatabase.rawQuery(
++            "SELECT bg FROM hourly_usage WHERE pkg = ? AND bucket = ?",
++            arrayOf(pkg, bucket.toString())
++        ).use { c ->
++            return if (c.moveToFirst()) c.getLong(0) else 0L
++        }
++    }
++
++    // Average background bytes of an app at this hour of the day over the previous days: (average, days with data).
++    @Synchronized
++    fun typicalBackground(pkg: String, hourOfDay: Int, beforeBucket: Long, days: Int = 14): Pair<Long, Int> {
++        val from = beforeBucket - days * 24L * 3600_000L
++        var sum = 0L
++        var count = 0
++        val cal = Calendar.getInstance()
++        readableDatabase.rawQuery(
++            "SELECT bucket, bg FROM hourly_usage WHERE pkg = ? AND bucket >= ? AND bucket < ?",
++            arrayOf(pkg, from.toString(), beforeBucket.toString())
++        ).use { c ->
++            while (c.moveToNext()) {
++                cal.timeInMillis = c.getLong(0)
++                if (cal.get(Calendar.HOUR_OF_DAY) == hourOfDay) {
++                    sum += c.getLong(1)
++                    count++
++                }
++            }
++        }
++        return if (count == 0) Pair(0L, 0) else Pair(sum / count, count)
++    }
++
++    @Synchronized
++    fun loadSnapshots(): Map<String, Snap> {
++        val out = HashMap<String, Snap>()
++        readableDatabase.rawQuery("SELECT pkg, day, wifi, mobile FROM snapshot", null).use { c ->
++            while (c.moveToNext()) {
++                out[c.getString(0)] = Snap(c.getLong(1), c.getLong(2), c.getLong(3))
++            }
++        }
++        return out
++    }
++
++    @Synchronized
++    fun saveSnapshots(map: Map<String, Snap>) {
++        val db = writableDatabase
++        db.beginTransaction()
++        try {
++            for ((pkg, s) in map) {
++                db.execSQL(
++                    "INSERT OR REPLACE INTO snapshot (pkg, day, wifi, mobile) VALUES (?, ?, ?, ?)",
++                    arrayOf<Any?>(pkg, s.day, s.wifi, s.mobile)
++                )
++            }
++            db.setTransactionSuccessful()
++        } finally {
++            db.endTransaction()
++        }
++    }
++
++    @Synchronized
++    fun getMeta(key: String): Long {
++        readableDatabase.rawQuery("SELECT v FROM meta WHERE k = ?", arrayOf(key)).use { c ->
++            return if (c.moveToFirst()) c.getLong(0) else 0L
++        }
++    }
++
++    @Synchronized
++    fun setMeta(key: String, value: Long) {
++        writableDatabase.execSQL("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", arrayOf<Any?>(key, value))
++    }
++
++    @Synchronized
++    fun prune(beforeBucket: Long) {
++        writableDatabase.delete("hourly_usage", "bucket < ?", arrayOf(beforeBucket.toString()))
++    }
++
++    companion object {
++        @Volatile
++        private var instance: UsageLogStore? = null
++
++        fun get(context: Context): UsageLogStore =
++            instance ?: synchronized(this) {
++                instance ?: UsageLogStore(context).also { instance = it }
++            }
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/service/ForegroundAppDetector.kt b/app/src/main/java/com/ray/flowmeter/service/ForegroundAppDetector.kt
+--- a/app/src/main/java/com/ray/flowmeter/service/ForegroundAppDetector.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/service/ForegroundAppDetector.kt	2026-11-01 07:59:47.463608236 +0000
+@@ -0,0 +1,31 @@
++// Finds out which app is on screen using the usage-access permission the app already has.
++package com.ray.flowmeter.service
++
++import android.app.usage.UsageEvents
++import android.app.usage.UsageStatsManager
++import android.content.Context
++
++class ForegroundAppDetector(private val context: Context) {
++    private var current: String? = null
++    private var lastQuery = 0L
++
++    fun currentApp(now: Long): String? {
++        val from = if (lastQuery == 0L) now - 6 * 3600_000L else lastQuery - 2000L
++        lastQuery = now
++        try {
++            val usm = context.getSystemService(UsageStatsManager::class.java) ?: return current
++            val events = usm.queryEvents(from, now)
++            val event = UsageEvents.Event()
++            while (events.hasNextEvent()) {
++                events.getNextEvent(event)
++                when (event.eventType) {
++                    UsageEvents.Event.ACTIVITY_RESUMED -> current = event.packageName
++                    UsageEvents.Event.ACTIVITY_PAUSED -> if (current == event.packageName) current = null
++                }
++            }
++        } catch (_: Exception) {
++            // Keep the last known app if the query fails.
++        }
++        return current
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/service/NetworkMonitoringService.kt b/app/src/main/java/com/ray/flowmeter/service/NetworkMonitoringService.kt
+--- a/app/src/main/java/com/ray/flowmeter/service/NetworkMonitoringService.kt	2026-11-01 07:59:47.447149633 +0000
++++ b/app/src/main/java/com/ray/flowmeter/service/NetworkMonitoringService.kt	2026-11-01 07:59:47.463541131 +0000
+@@ -46,6 +46,7 @@
+ import kotlinx.coroutines.Job
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.first
++import com.ray.flowmeter.utils.BackgroundReasons
+ import kotlinx.coroutines.isActive
+ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.sync.Mutex
+@@ -146,6 +147,8 @@
+     }
+ 
+     private var trafficTimer: Long = 0
++    private val usageSampler by lazy { UsageSampler(applicationContext) }
++    private var lastScreenOnAt = System.currentTimeMillis()
+     private var uidSnapshot: Map<Int, Pair<Long, Long>> = emptyMap()
+     private var lastTrafficNotificationTime: Long = 0
+ 
+@@ -296,10 +299,13 @@
+         monitorJob = serviceScope.launch {
+             while (isActive) {
+                 val now = System.currentTimeMillis()
+-                if ((now - lastUsageQueryTime) > 2000) {
++                if (isScreenOn) lastScreenOnAt = now
++                // Every check asks the system for traffic stats, so they run every 4 seconds instead of 2.
++                if ((now - lastUsageQueryTime) > 4000) {
+                     updateDailyUsage()
+                     checkAppLimits()
+                 }
++                runUsageSampling(now)
+ 
+                 if (isScreenOn) {
+                     updateStats()
+@@ -1144,6 +1150,69 @@
+         manager.safeNotify(notificationId, builder.build())
+         sendSummaryNotification()
+     }
++
++    private suspend fun runUsageSampling(now: Long) {
++        if (!usageSampler.shouldRun(now)) return
++        try {
++            val findings = withContext(Dispatchers.IO) { usageSampler.sample(now, lastScreenOnAt) }
++            findings.forEach { sendBackgroundAlert(it) }
++        } catch (_: Exception) {
++            // Sampling must never break the monitoring loop.
++        }
++    }
++
++    private fun sendBackgroundAlert(finding: UsageSampler.Finding) {
++        val manager = getSystemService(NotificationManager::class.java)
++
++        serviceScope.launch(Dispatchers.IO) {
++            alertRepository.insert(
++                AppAlert(
++                    timestamp = System.currentTimeMillis(),
++                    appName = finding.appName,
++                    packageName = finding.packageName,
++                    rxBytes = finding.bytes,
++                    txBytes = 0L,
++                    speed = finding.flags,
++                    alertType = "BACKGROUND_USAGE",
++                    limitValue = finding.typicalBytes,
++                )
++            )
++        }
++
++        val intent = Intent(this, MainActivity::class.java).apply {
++            putExtra(EXTRA_NAVIGATE_TO_ALERTS, true)
++            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
++        }
++        val pendingIntent = PendingIntent.getActivity(
++            this,
++            finding.packageName.hashCode(),
++            intent,
++            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
++        )
++
++        val reasons = BackgroundReasons.describe(this, finding.flags, finding.typicalBytes) { formatDataUsage(it) }
++        val contentText = getString(
++            R.string.notification_background_msg,
++            finding.appName,
++            formatDataUsage(finding.bytes),
++            reasons
++        )
++
++        val builder = NotificationCompat.Builder(this, CHANNEL_ALERTS)
++            .setSmallIcon(R.drawable.ic_launcher_foreground)
++            .setContentTitle(getString(R.string.notification_background_title))
++            .setContentText(contentText)
++            .setStyle(NotificationCompat.BigTextStyle().bigText(contentText))
++            .setPriority(NotificationCompat.PRIORITY_HIGH)
++            .setCategory(Notification.CATEGORY_ALARM)
++            .setAutoCancel(true)
++            .setGroup(ALERT_GROUP_KEY)
++            .setContentIntent(pendingIntent)
++
++        val notificationId = TRAFFIC_ALERT_ID + 90000 + (finding.packageName.hashCode() and 0xFFFF)
++        manager.safeNotify(notificationId, builder.build())
++        sendSummaryNotification()
++    }
+ 
+     private fun sendSummaryNotification() {
+         val manager = getSystemService(NotificationManager::class.java)
+diff -ruN a/app/src/main/java/com/ray/flowmeter/service/UsageSampler.kt b/app/src/main/java/com/ray/flowmeter/service/UsageSampler.kt
+--- a/app/src/main/java/com/ray/flowmeter/service/UsageSampler.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/service/UsageSampler.kt	2026-11-01 07:59:47.463622322 +0000
+@@ -0,0 +1,232 @@
++// Every few minutes it reads how much each app used the network, stores it by hour and flags
++// apps that use a lot of data in the background (screen off, or without being opened).
++package com.ray.flowmeter.service
++
++import android.app.usage.NetworkStats
++import android.app.usage.NetworkStatsManager
++import android.app.usage.UsageEvents
++import android.app.usage.UsageStatsManager
++import android.content.Context
++import android.net.ConnectivityManager
++import android.os.Process
++import com.ray.flowmeter.data.UsageLogStore
++import com.ray.flowmeter.utils.BackgroundReasons
++import java.util.Calendar
++
++class UsageSampler(private val context: Context) {
++
++    data class Finding(
++        val packageName: String,
++        val appName: String,
++        val bytes: Long,
++        val typicalBytes: Long,
++        val flags: Long,
++    )
++
++    private class Foreground(val foregroundMs: Map<String, Long>, val lastOpened: Map<String, Long>)
++
++    private val store = UsageLogStore.get(context)
++    private val pm = context.packageManager
++    private val uidCache = HashMap<Int, String?>()
++    private val nameCache = HashMap<String, String>()
++    private val lastAlertAt = HashMap<String, Long>()
++    private var lastSampleAt = 0L
++
++    fun shouldRun(now: Long): Boolean {
++        if (lastSampleAt == 0L) lastSampleAt = store.getMeta(META_LAST_SAMPLE)
++        return now - lastSampleAt >= SAMPLE_INTERVAL_MS
++    }
++
++    // Blocking work: call it from a background thread.
++    fun sample(now: Long, lastScreenOnAt: Long): List<Finding> {
++        val windowStart = if (lastSampleAt == 0L) now - SAMPLE_INTERVAL_MS else lastSampleAt
++        val gap = (now - windowStart) > SAMPLE_INTERVAL_MS * 3
++        lastSampleAt = now
++        store.setMeta(META_LAST_SAMPLE, now)
++
++        val dayStart = startOfDay(now)
++        val current = readCumulative(dayStart, now)
++        val previous = store.loadSnapshots()
++        val foreground = readForeground(windowStart, now)
++        val bucket = hourStart(now - 1)
++        val hourOfDay = hourOf(bucket)
++        val screenOff = lastScreenOnAt < windowStart
++
++        val findings = ArrayList<Finding>()
++        val snapshots = HashMap<String, UsageLogStore.Snap>()
++
++        for ((pkg, usage) in current) {
++            val wifiNow = usage[0]
++            val mobileNow = usage[1]
++            snapshots[pkg] = UsageLogStore.Snap(dayStart, wifiNow, mobileNow)
++
++            // First time we see an app only sets its baseline.
++            val prev = previous[pkg] ?: continue
++            val dWifi: Long
++            val dMobile: Long
++            if (prev.day != dayStart) {
++                dWifi = wifiNow
++                dMobile = mobileNow
++            } else if (wifiNow >= prev.wifi && mobileNow >= prev.mobile) {
++                dWifi = wifiNow - prev.wifi
++                dMobile = mobileNow - prev.mobile
++            } else {
++                continue
++            }
++
++            val total = dWifi + dMobile
++            if (total <= 0L) continue
++
++            // If the app was never on screen during the window, all its traffic is background traffic.
++            val foregroundMs = foreground.foregroundMs[pkg] ?: 0L
++            val background = if (foregroundMs == 0L) total else 0L
++            val name = nameOf(pkg)
++            store.addUsage(pkg, name, bucket, dWifi, dMobile, background)
++
++            if (gap || background == 0L || pkg == context.packageName) continue
++
++            val hourBackground = store.backgroundInBucket(pkg, bucket)
++            val (typical, samples) = store.typicalBackground(pkg, hourOfDay, bucket)
++            val unusual = if (samples >= MIN_HISTORY_SAMPLES) {
++                hourBackground >= maxOf(typical * 3, MIN_BACKGROUND_BYTES)
++            } else {
++                hourBackground >= NO_HISTORY_BYTES
++            }
++            if (!unusual) continue
++
++            val lastAlert = lastAlertAt[pkg] ?: 0L
++            if (now - lastAlert < ALERT_COOLDOWN_MS) continue
++            lastAlertAt[pkg] = now
++
++            var flags = 0L
++            if (screenOff) flags = flags or BackgroundReasons.FLAG_SCREEN_OFF
++            val lastOpened = foreground.lastOpened[pkg] ?: 0L
++            if (now - lastOpened > NOT_OPENED_MS) flags = flags or BackgroundReasons.FLAG_NOT_OPENED
++            if (dMobile > dWifi) flags = flags or BackgroundReasons.FLAG_MOBILE
++            findings.add(Finding(pkg, name, hourBackground, typical, flags))
++        }
++
++        store.saveSnapshots(snapshots)
++        store.prune(now - RETENTION_MS)
++        return findings
++    }
++
++    // Bytes since [start] per package: [wifi, mobile].
++    private fun readCumulative(start: Long, end: Long): Map<String, LongArray> {
++        val result = HashMap<String, LongArray>()
++        val manager = context.getSystemService(NetworkStatsManager::class.java) ?: return result
++        val transports = intArrayOf(ConnectivityManager.TYPE_WIFI, ConnectivityManager.TYPE_MOBILE)
++        for (transport in transports) {
++            try {
++                val stats = manager.querySummary(transport, null, start, end)
++                try {
++                    val bucket = NetworkStats.Bucket()
++                    while (stats.hasNextBucket()) {
++                        stats.getNextBucket(bucket)
++                        val uid = bucket.uid
++                        if (uid == Process.SYSTEM_UID || uid == Process.SHELL_UID) continue
++                        val pkg = packageFor(uid) ?: continue
++                        val entry = result.getOrPut(pkg) { LongArray(2) }
++                        val bytes = bucket.rxBytes + bucket.txBytes
++                        if (transport == ConnectivityManager.TYPE_WIFI) entry[0] += bytes else entry[1] += bytes
++                    }
++                } finally {
++                    stats.close()
++                }
++            } catch (_: Exception) {
++                // Missing permission or unsupported network: skip it.
++            }
++        }
++        return result
++    }
++
++    private fun readForeground(windowStart: Long, now: Long): Foreground {
++        val foregroundMs = HashMap<String, Long>()
++        val lastOpened = HashMap<String, Long>()
++        val resumedAt = HashMap<String, Long>()
++        try {
++            val usm = context.getSystemService(UsageStatsManager::class.java)
++            val events = usm.queryEvents(minOf(windowStart, now - OPENED_LOOKBACK_MS), now)
++            val event = UsageEvents.Event()
++            while (events.hasNextEvent()) {
++                events.getNextEvent(event)
++                val pkg = event.packageName ?: continue
++                when (event.eventType) {
++                    UsageEvents.Event.ACTIVITY_RESUMED -> {
++                        resumedAt[pkg] = event.timeStamp
++                        lastOpened[pkg] = event.timeStamp
++                    }
++                    UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> {
++                        val start = resumedAt.remove(pkg)
++                        if (start != null) addOverlap(foregroundMs, pkg, start, event.timeStamp, windowStart, now)
++                    }
++                }
++            }
++            for ((pkg, start) in resumedAt) addOverlap(foregroundMs, pkg, start, now, windowStart, now)
++        } catch (_: Exception) {
++            // Without usage events every window is treated as background, so we skip alerts instead.
++        }
++        return Foreground(foregroundMs, lastOpened)
++    }
++
++    private fun addOverlap(map: HashMap<String, Long>, pkg: String, a: Long, b: Long, windowStart: Long, windowEnd: Long) {
++        val overlap = minOf(b, windowEnd) - maxOf(a, windowStart)
++        if (overlap > 0L) map[pkg] = (map[pkg] ?: 0L) + overlap
++    }
++
++    private fun packageFor(uid: Int): String? {
++        if (uidCache.containsKey(uid)) return uidCache[uid]
++        val pkg = try {
++            pm.getPackagesForUid(uid)?.firstOrNull()
++        } catch (_: Exception) {
++            null
++        }
++        uidCache[uid] = pkg
++        return pkg
++    }
++
++    private fun nameOf(pkg: String): String = nameCache.getOrPut(pkg) {
++        try {
++            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
++        } catch (_: Exception) {
++            pkg
++        }
++    }
++
++    private fun startOfDay(ms: Long): Long {
++        val cal = Calendar.getInstance()
++        cal.timeInMillis = ms
++        cal.set(Calendar.HOUR_OF_DAY, 0)
++        cal.set(Calendar.MINUTE, 0)
++        cal.set(Calendar.SECOND, 0)
++        cal.set(Calendar.MILLISECOND, 0)
++        return cal.timeInMillis
++    }
++
++    private fun hourStart(ms: Long): Long {
++        val cal = Calendar.getInstance()
++        cal.timeInMillis = ms
++        cal.set(Calendar.MINUTE, 0)
++        cal.set(Calendar.SECOND, 0)
++        cal.set(Calendar.MILLISECOND, 0)
++        return cal.timeInMillis
++    }
++
++    private fun hourOf(ms: Long): Int {
++        val cal = Calendar.getInstance()
++        cal.timeInMillis = ms
++        return cal.get(Calendar.HOUR_OF_DAY)
++    }
++
++    companion object {
++        private const val META_LAST_SAMPLE = "last_sample"
++        private const val SAMPLE_INTERVAL_MS = 15 * 60_000L
++        private const val RETENTION_MS = 35L * 24 * 3600_000L
++        private const val OPENED_LOOKBACK_MS = 6 * 3600_000L
++        private const val NOT_OPENED_MS = 6 * 3600_000L
++        private const val ALERT_COOLDOWN_MS = 3 * 3600_000L
++        private const val MIN_HISTORY_SAMPLES = 3
++        private const val MIN_BACKGROUND_BYTES = 8L * 1024 * 1024
++        private const val NO_HISTORY_BYTES = 30L * 1024 * 1024
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/service/Vpn.kt b/app/src/main/java/com/ray/flowmeter/service/Vpn.kt
+--- a/app/src/main/java/com/ray/flowmeter/service/Vpn.kt	2026-11-01 07:59:47.447359261 +0000
++++ b/app/src/main/java/com/ray/flowmeter/service/Vpn.kt	2026-11-01 07:59:47.463590008 +0000
+@@ -16,6 +16,7 @@
+ import com.ray.flowmeter.data.FlowMeterDatabase
+ import com.ray.flowmeter.data.UserPreferencesRepository
+ import com.ray.flowmeter.utils.LocaleHelper
++import com.ray.flowmeter.data.PerformanceModeStore
+ import kotlinx.coroutines.*
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.collectLatest
+@@ -87,6 +88,7 @@
+         val database = FlowMeterDatabase.getDatabase(applicationContext)
+         repository = AppLimitRepository(database.appLimitDao())
+         userPrefs = UserPreferencesRepository(applicationContext)
++        PerformanceModeStore.init(applicationContext)
+ 
+         val connectivityManager = getSystemService(ConnectivityManager::class.java)
+         
+@@ -112,135 +114,13 @@
+         val blockedApps: List<String>
+     )
+ 
+-    private suspend fun isSystemPlanLimitExceeded(networkType: Int?): Boolean {
+-        if (networkType == null) return false
+-        
+-        val networkStatsManager = getSystemService(Context.NETWORK_STATS_SERVICE) as? NetworkStatsManager ?: return false
+-        
+-        val resetHour = userPrefs.resetTimeHour.first()
+-        val resetMinute = userPrefs.resetTimeMinute.first()
+-        val monthlyResetDay = userPrefs.monthlyResetDay.first()
+-        
+-        val currentTime = System.currentTimeMillis()
+-        
+-        fun getStartTime(period: String): Long {
+-            val calendar = Calendar.getInstance()
+-            calendar[Calendar.HOUR_OF_DAY] = resetHour
+-            calendar[Calendar.MINUTE] = resetMinute
+-            calendar[Calendar.SECOND] = 0
+-            calendar[Calendar.MILLISECOND] = 0
+-
+-            val timeNow = System.currentTimeMillis()
+-
+-            if (period == "monthly") {
+-                val maxDay = calendar.getActualMaximum(Calendar.DAY_OF_MONTH)
+-                calendar[Calendar.DAY_OF_MONTH] = monthlyResetDay.coerceAtMost(maxDay)
+-            }
+-
+-            var startTime = calendar.timeInMillis
+-
+-            if (timeNow < startTime) {
+-                if (period == "monthly") {
+-                    calendar.add(Calendar.MONTH, -1)
+-                    val prevMaxDay = calendar.getActualMaximum(Calendar.DAY_OF_MONTH)
+-                    calendar[Calendar.DAY_OF_MONTH] = monthlyResetDay.coerceAtMost(prevMaxDay)
+-                } else {
+-                    calendar.add(Calendar.DAY_OF_YEAR, -1)
+-                }
+-                startTime = calendar.timeInMillis
+-            }
+-            return startTime
+-        }
+-
+-        fun getSumUsage(transportType: Int, period: String): Long {
+-            var total = 0L
+-            val start = getStartTime(period)
+-            try {
+-                val stats = networkStatsManager.querySummary(transportType, null, start, currentTime)
+-                val bucket = NetworkStats.Bucket()
+-                while (stats.hasNextBucket()) {
+-                    stats.getNextBucket(bucket)
+-                    total += bucket.rxBytes + bucket.txBytes
+-                }
+-                stats.close()
+-            } catch (_: Exception) {}
+-            return total
+-        }
+-
+-        fun getCustomSumUsage(transportType: Int, start: Long, end: Long): Long {
+-            var total = 0L
+-            try {
+-                val queryEnd = end.coerceAtMost(currentTime)
+-                val queryStart = start.coerceAtMost(queryEnd)
+-                val stats = networkStatsManager.querySummary(transportType, null, queryStart, queryEnd)
+-                val bucket = NetworkStats.Bucket()
+-                while (stats.hasNextBucket()) {
+-                    stats.getNextBucket(bucket)
+-                    total += bucket.rxBytes + bucket.txBytes
+-                }
+-                stats.close()
+-            } catch (_: Exception) {}
+-            return total
+-        }
+-
+-        if (networkType == NetworkCapabilities.TRANSPORT_CELLULAR) {
+-            val dailyEnabled = userPrefs.dataDailyLimitEnabled.first()
+-            if (dailyEnabled) {
+-                val limit = userPrefs.dataDailyLimit.first()
+-                val usage = getSumUsage(NetworkCapabilities.TRANSPORT_CELLULAR, "daily")
+-                if (usage >= limit) return true
+-            }
+-            
+-            val monthlyEnabled = userPrefs.dataMonthlyLimitEnabled.first()
+-            if (monthlyEnabled) {
+-                val limit = userPrefs.dataMonthlyLimit.first()
+-                val usage = getSumUsage(NetworkCapabilities.TRANSPORT_CELLULAR, "monthly")
+-                if (usage >= limit) return true
+-            }
+-            
+-            val customEnabled = userPrefs.dataCustomLimitEnabled.first()
+-            if (customEnabled) {
+-                val limit = userPrefs.dataCustomLimit.first()
+-                val start = userPrefs.dataCustomLimitStart.first()
+-                val end = userPrefs.dataCustomLimitEnd.first()
+-                val usage = getCustomSumUsage(NetworkCapabilities.TRANSPORT_CELLULAR, start, end)
+-                if (usage >= limit) return true
+-            }
+-        } else if (networkType == NetworkCapabilities.TRANSPORT_WIFI) {
+-            val dailyEnabled = userPrefs.wifiDailyLimitEnabled.first()
+-            if (dailyEnabled) {
+-                val limit = userPrefs.wifiDailyLimit.first()
+-                val usage = getSumUsage(NetworkCapabilities.TRANSPORT_WIFI, "daily")
+-                if (usage >= limit) return true
+-            }
+-            
+-            val monthlyEnabled = userPrefs.wifiMonthlyLimitEnabled.first()
+-            if (monthlyEnabled) {
+-                val limit = userPrefs.wifiMonthlyLimit.first()
+-                val usage = getSumUsage(NetworkCapabilities.TRANSPORT_WIFI, "monthly")
+-                if (usage >= limit) return true
+-            }
+-            
+-            val customEnabled = userPrefs.wifiCustomLimitEnabled.first()
+-            if (customEnabled) {
+-                val limit = userPrefs.wifiCustomLimit.first()
+-                val start = userPrefs.wifiCustomLimitStart.first()
+-                val end = userPrefs.wifiCustomLimitEnd.first()
+-                val usage = getCustomSumUsage(NetworkCapabilities.TRANSPORT_WIFI, start, end)
+-                if (usage >= limit) return true
+-            }
+-        }
+-        
+-        return false
+-    }
+-
+     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+         collectionJob?.cancel()
+         
+         val tickerFlow = flow {
+             while (currentCoroutineContext().isActive) {
+                 emit(System.currentTimeMillis())
+-                delay(5000)
++                delay(if (PerformanceModeStore.armed.value) 2000L else 5000L)
+             }
+         }
+ 
+@@ -250,19 +130,26 @@
+                 userPrefs.appBlockingMasterEnabled,
+                 currentNetworkType,
+                 tickerFlow
+-            ) { limits, masterEnabled, networkType, _ ->
++            ) { limits, masterEnabled, networkType, now ->
+                 if (!masterEnabled) null
+                 else {
+-                    val systemLimitExceeded = isSystemPlanLimitExceeded(networkType)
+-                    if (systemLimitExceeded) {
+-                        VpnBlockConfig(blockAll = true, blockedApps = emptyList())
+-                    } else {
++                    run {
+                         val isWifi = networkType == NetworkCapabilities.TRANSPORT_WIFI
+                         val isMobile = networkType == NetworkCapabilities.TRANSPORT_CELLULAR
+ 
++                        val cal = Calendar.getInstance().apply { timeInMillis = now }
+                         val blockedApps = limits.filter { limit ->
+                             if (!limit.isEnabled) return@filter false
+ 
++                            // Scheduled block: cut internet during the chosen days and hours.
++                            if (limit.isScheduleActive(cal)) {
++                                return@filter when (limit.networkType) {
++                                    "wifi" -> isWifi
++                                    "mobile" -> isMobile
++                                    else -> isWifi || isMobile
++                                }
++                            }
++
+                             if (limit.isAlwaysBlocked) {
+                                 return@filter when (limit.networkType) {
+                                     "wifi" -> isWifi
+@@ -281,7 +168,10 @@
+                                 else -> limit.isBlocked || limit.dataLimit == 0L
+                             }
+                         }.map { it.packageName }.toList()
+-                        VpnBlockConfig(blockAll = false, blockedApps = blockedApps)
++                        val performanceBlocked = kotlinx.coroutines.withContext(Dispatchers.Default) {
++                            performanceBlockedApps(isMobile, now)
++                        }
++                        VpnBlockConfig(blockAll = false, blockedApps = (blockedApps + performanceBlocked).distinct())
+                     }
+                 }
+             }.distinctUntilChanged().collectLatest { config ->
+@@ -297,6 +187,45 @@
+         return START_STICKY
+     }
+ 
++    private val foregroundDetector by lazy { ForegroundAppDetector(applicationContext) }
++    private var lastGameSeenAt = 0L
++    private var internetPackagesCache: List<String> = emptyList()
++    private var internetPackagesAt = 0L
++    private val performanceExitDelayMs = 15_000L
++
++    // Performance mode: while a chosen game is on screen (mobile data only) every other app is cut,
++    // except the exceptions. It stays active a few seconds after leaving the game.
++    private fun performanceBlockedApps(isMobile: Boolean, now: Long): List<String> {
++        val games = PerformanceModeStore.games.value
++        if (!PerformanceModeStore.armed.value || !isMobile || games.isEmpty()) {
++            PerformanceModeStore.setActive(false)
++            lastGameSeenAt = 0L
++            return emptyList()
++        }
++        val foreground = foregroundDetector.currentApp(now)
++        if (foreground != null && foreground in games) lastGameSeenAt = now
++        val active = lastGameSeenAt != 0L && now - lastGameSeenAt < performanceExitDelayMs
++        PerformanceModeStore.setActive(active)
++        if (!active) return emptyList()
++        val exceptions = PerformanceModeStore.exceptions.value
++        return internetPackages(now).filter { it !in games && it !in exceptions && it != packageName }
++    }
++
++    // Installed apps that can use the internet. Cached for a minute because scanning them is slow.
++    private fun internetPackages(now: Long): List<String> {
++        if (now - internetPackagesAt < 60_000L && internetPackagesCache.isNotEmpty()) return internetPackagesCache
++        val list = try {
++            packageManager.getInstalledPackages(android.content.pm.PackageManager.GET_PERMISSIONS)
++                .filter { info -> info.requestedPermissions?.contains(android.Manifest.permission.INTERNET) == true }
++                .map { it.packageName }
++        } catch (_: Exception) {
++            emptyList()
++        }
++        internetPackagesCache = list
++        internetPackagesAt = now
++        return list
++    }
++
+     private fun updateVpnInterface(blockAll: Boolean, blockedApps: List<String>) {
+         vpnInterface?.close()
+         vpnInterface = null
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/dialogs/ThemeTransitionDialog.kt b/app/src/main/java/com/ray/flowmeter/ui/dialogs/ThemeTransitionDialog.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/dialogs/ThemeTransitionDialog.kt	2026-11-01 07:59:47.448532402 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/dialogs/ThemeTransitionDialog.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,134 +0,0 @@
+-// Theme transition effect selector dialog offering selection of Nitro transition animation styles.
+-package com.ray.flowmeter.ui.dialogs
+-
+-import androidx.compose.foundation.BorderStroke
+-import androidx.compose.foundation.layout.*
+-import androidx.compose.foundation.lazy.LazyColumn
+-import androidx.compose.foundation.lazy.items
+-import androidx.compose.foundation.shape.RoundedCornerShape
+-import androidx.compose.material.icons.Icons
+-import androidx.compose.material.icons.rounded.*
+-import androidx.compose.material3.*
+-import androidx.compose.runtime.*
+-import androidx.compose.ui.Alignment
+-import androidx.compose.ui.Modifier
+-import androidx.compose.ui.graphics.vector.ImageVector
+-import androidx.compose.ui.res.stringResource
+-import androidx.compose.ui.text.font.FontWeight
+-import androidx.compose.ui.unit.dp
+-import com.ray.flowmeter.R
+-import com.ray.flowmeter.ui.theme.ThemeTransitionKind
+-import com.ray.flowmeter.ui.theme.bounceClick
+-
+-data class TransitionOption(
+-    val kind: ThemeTransitionKind,
+-    val titleRes: Int,
+-    val icon: ImageVector
+-)
+-
+-@OptIn(ExperimentalMaterial3Api::class)
+-@Composable
+-fun ThemeTransitionDialog(
+-    currentKind: String,
+-    title: String = stringResource(R.string.dialog_select_theme_transition_title),
+-    onDismiss: () -> Unit,
+-    onSelect: (String) -> Unit
+-) {
+-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+-
+-    val options = remember {
+-        listOf(
+-            TransitionOption(ThemeTransitionKind.NONE, R.string.transition_none, Icons.Rounded.Block),
+-            TransitionOption(ThemeTransitionKind.CIRCULAR_REVEAL, R.string.transition_circular_reveal, Icons.Rounded.RadioButtonChecked),
+-            TransitionOption(ThemeTransitionKind.CIRCULAR_REVEAL_INVERSE, R.string.transition_circular_reveal_inverse, Icons.Rounded.ChangeCircle),
+-            TransitionOption(ThemeTransitionKind.IRIS_HEXAGON, R.string.transition_iris, Icons.Rounded.Hexagon),
+-            TransitionOption(ThemeTransitionKind.IRIS_DIAMOND, R.string.transition_iris_diamond, Icons.Rounded.Diamond),
+-            TransitionOption(ThemeTransitionKind.WIPE_RIGHT, R.string.transition_wipe, Icons.Rounded.SwipeRight),
+-            TransitionOption(ThemeTransitionKind.SPLIT, R.string.transition_split, Icons.Rounded.VerticalSplit),
+-            TransitionOption(ThemeTransitionKind.BARN_DOOR, R.string.transition_barn_door, Icons.Rounded.MeetingRoom),
+-            TransitionOption(ThemeTransitionKind.BLINDS, R.string.transition_blinds, Icons.Rounded.TableRows),
+-            TransitionOption(ThemeTransitionKind.RIPPLE, R.string.transition_ripple, Icons.Rounded.Waves),
+-            TransitionOption(ThemeTransitionKind.STRIPES, R.string.transition_stripes, Icons.Rounded.ViewStream),
+-            TransitionOption(ThemeTransitionKind.FADE, R.string.transition_fade, Icons.Rounded.Gradient),
+-            TransitionOption(ThemeTransitionKind.ZOOM, R.string.transition_zoom, Icons.Rounded.ZoomIn),
+-            TransitionOption(ThemeTransitionKind.RANDOM, R.string.transition_random, Icons.Rounded.Shuffle)
+-        )
+-    }
+-
+-    ModalBottomSheet(
+-        onDismissRequest = onDismiss,
+-        sheetState = sheetState,
+-        dragHandle = { BottomSheetDefaults.DragHandle() },
+-        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+-        shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+-        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false)
+-    ) {
+-        AnimatedDialogContent(onBack = onDismiss) {
+-            Column(
+-                modifier = Modifier
+-                    .fillMaxWidth()
+-                    .padding(horizontal = 24.dp)
+-                    .padding(bottom = 32.dp)
+-            ) {
+-                Text(
+-                    text = title,
+-                    style = MaterialTheme.typography.headlineSmall,
+-                    fontWeight = FontWeight.ExtraBold,
+-                    color = MaterialTheme.colorScheme.onSurface,
+-                    modifier = Modifier.padding(bottom = 16.dp)
+-                )
+-
+-                LazyColumn(
+-                    modifier = Modifier
+-                        .fillMaxWidth()
+-                        .heightIn(max = 420.dp),
+-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+-                ) {
+-                    items(options) { item ->
+-                        val isSelected = currentKind.equals(item.kind.key, ignoreCase = true)
+-                        Surface(
+-                            modifier = Modifier
+-                                .fillMaxWidth()
+-                                .bounceClick {
+-                                    onSelect(item.kind.key)
+-                                    onDismiss()
+-                                },
+-                            shape = RoundedCornerShape(20.dp),
+-                            color = if (isSelected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+-                            border = BorderStroke(
+-                                width = if (isSelected) 2.dp else 1.dp,
+-                                color = if (isSelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant
+-                            )
+-                        ) {
+-                            Row(
+-                                modifier = Modifier
+-                                    .fillMaxWidth()
+-                                    .padding(horizontal = 16.dp, vertical = 14.dp),
+-                                verticalAlignment = Alignment.CenterVertically
+-                            ) {
+-                                Icon(
+-                                    imageVector = item.icon,
+-                                    contentDescription = null,
+-                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+-                                    modifier = Modifier.size(24.dp)
+-                                )
+-                                Spacer(modifier = Modifier.width(16.dp))
+-                                Text(
+-                                    text = stringResource(item.titleRes),
+-                                    style = MaterialTheme.typography.bodyLarge,
+-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+-                                    color = if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+-                                    modifier = Modifier.weight(1f)
+-                                )
+-                                RadioButton(
+-                                    selected = isSelected,
+-                                    onClick = null
+-                                )
+-                            }
+-                        }
+-                    }
+-                }
+-            }
+-        }
+-    }
+-}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/AlertsScreen.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/AlertsScreen.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/AlertsScreen.kt	2026-11-01 07:59:47.448854305 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/AlertsScreen.kt	2026-11-01 07:59:47.464080217 +0000
+@@ -26,6 +26,7 @@
+ import androidx.compose.ui.unit.*
+ import androidx.core.graphics.drawable.toBitmap
+ import com.ray.flowmeter.R
++import com.ray.flowmeter.utils.BackgroundReasons
+ import com.ray.flowmeter.data.AppAlert
+ import com.ray.flowmeter.ui.theme.*
+ import com.ray.flowmeter.ui.viewmodels.AlertsViewModel
+@@ -50,7 +51,8 @@
+         "APP_LIMIT" to stringResource(R.string.label_app_limits),
+         "DAILY_LIMIT" to stringResource(R.string.label_daily_limits),
+         "MONTHLY_LIMIT" to stringResource(R.string.label_monthly_limits),
+-        "HIGH_TRAFFIC" to stringResource(R.string.label_high_traffic)
++        "HIGH_TRAFFIC" to stringResource(R.string.label_high_traffic),
++        "BACKGROUND_USAGE" to stringResource(R.string.label_background_usage)
+     )
+ 
+     Box(
+@@ -203,6 +205,7 @@
+                                     "APP_LIMIT" -> stringResource(R.string.msg_no_alerts_app)
+                                     "DAILY_LIMIT" -> stringResource(R.string.msg_no_alerts_daily)
+                                     "MONTHLY_LIMIT" -> stringResource(R.string.msg_no_alerts_monthly)
++                                    "BACKGROUND_USAGE" -> stringResource(R.string.msg_no_alerts_background)
+                                     else -> stringResource(R.string.msg_no_alerts_traffic)
+                                 },
+                                 style = MaterialTheme.typography.headlineSmall,
+@@ -374,6 +377,7 @@
+             val limitStr = formatUsage(alert.limitValue)
+             "${stringResource(R.string.label_monthly_limit_reached)} (${stringResource(R.string.label_limit_prefix, limitStr)})"
+         }
++        "BACKGROUND_USAGE" -> BackgroundReasons.describe(context, alert.speed, alert.limitValue) { formatUsage(it) }
+         else -> alert.alertType
+     }
+ 
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/AppBlockRulesSection.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/AppBlockRulesSection.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/AppBlockRulesSection.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/AppBlockRulesSection.kt	2026-11-01 07:59:47.464322186 +0000
+@@ -0,0 +1,185 @@
++// Per-app blocking rules shown in the limit editor: an "always block" switch
++// and a weekly schedule (days of the week plus start and end time).
++package com.ray.flowmeter.ui.screens
++
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.ExperimentalLayoutApi
++import androidx.compose.foundation.layout.FlowRow
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.width
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.ExperimentalMaterial3Api
++import androidx.compose.material3.FilterChip
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedButton
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.material3.TimePicker
++import androidx.compose.material3.rememberTimePickerState
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.dp
++import com.ray.flowmeter.R
++import java.time.DayOfWeek
++import java.time.format.TextStyle
++import java.util.Locale
++
++@OptIn(ExperimentalLayoutApi::class)
++@Composable
++fun AppBlockRulesSection(
++    alwaysBlocked: Boolean,
++    onAlwaysBlockedChange: (Boolean) -> Unit,
++    scheduleEnabled: Boolean,
++    onScheduleEnabledChange: (Boolean) -> Unit,
++    scheduleDays: Int,
++    onScheduleDaysChange: (Int) -> Unit,
++    startMin: Int,
++    onStartChange: (Int) -> Unit,
++    endMin: Int,
++    onEndChange: (Int) -> Unit,
++) {
++    var pickingStart by remember { mutableStateOf(false) }
++    var pickingEnd by remember { mutableStateOf(false) }
++
++    Column(modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) {
++        Text(
++            text = stringResource(R.string.block_rules_title),
++            style = MaterialTheme.typography.titleMedium,
++            fontWeight = FontWeight.Bold,
++        )
++        Spacer(Modifier.height(8.dp))
++
++        RuleSwitchRow(
++            title = stringResource(R.string.block_schedule_title),
++            description = stringResource(R.string.block_schedule_desc),
++            checked = scheduleEnabled,
++            onCheckedChange = onScheduleEnabledChange,
++        )
++
++        if (scheduleEnabled) {
++            Spacer(Modifier.height(8.dp))
++            // Bit 0 = Monday ... bit 6 = Sunday.
++            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
++                for (day in 0..6) {
++                    val selected = ((scheduleDays shr day) and 1) == 1
++                    FilterChip(
++                        selected = selected,
++                        onClick = { onScheduleDaysChange(scheduleDays xor (1 shl day)) },
++                        label = {
++                            Text(DayOfWeek.of(day + 1).getDisplayName(TextStyle.SHORT, Locale.getDefault()))
++                        },
++                    )
++                }
++            }
++            Spacer(Modifier.height(8.dp))
++            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                OutlinedButton(onClick = { pickingStart = true }) {
++                    Text(stringResource(R.string.block_schedule_from, formatMinutes(startMin)))
++                }
++                OutlinedButton(onClick = { pickingEnd = true }) {
++                    Text(stringResource(R.string.block_schedule_to, formatMinutes(endMin)))
++                }
++            }
++            Spacer(Modifier.height(8.dp))
++            Text(
++                text = stringResource(R.string.block_schedule_note),
++                style = MaterialTheme.typography.bodySmall,
++                color = MaterialTheme.colorScheme.onSurfaceVariant,
++            )
++        }
++    }
++
++    if (pickingStart) {
++        TimeDialog(
++            initialMinutes = startMin,
++            onDismiss = { pickingStart = false },
++            onConfirm = {
++                onStartChange(it)
++                pickingStart = false
++            },
++        )
++    }
++    if (pickingEnd) {
++        TimeDialog(
++            initialMinutes = endMin,
++            onDismiss = { pickingEnd = false },
++            onConfirm = {
++                onEndChange(it)
++                pickingEnd = false
++            },
++        )
++    }
++}
++
++@Composable
++private fun RuleSwitchRow(
++    title: String,
++    description: String,
++    checked: Boolean,
++    onCheckedChange: (Boolean) -> Unit,
++) {
++    Row(
++        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        Column(modifier = Modifier.weight(1f)) {
++            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
++            Text(
++                description,
++                style = MaterialTheme.typography.bodySmall,
++                color = MaterialTheme.colorScheme.onSurfaceVariant,
++            )
++        }
++        Spacer(Modifier.width(12.dp))
++        Switch(checked = checked, onCheckedChange = onCheckedChange)
++    }
++}
++
++@OptIn(ExperimentalMaterial3Api::class)
++@Composable
++private fun TimeDialog(
++    initialMinutes: Int,
++    onDismiss: () -> Unit,
++    onConfirm: (Int) -> Unit,
++) {
++    val state = rememberTimePickerState(
++        initialHour = initialMinutes / 60,
++        initialMinute = initialMinutes % 60,
++        is24Hour = false,
++    )
++    AlertDialog(
++        onDismissRequest = onDismiss,
++        confirmButton = {
++            TextButton(onClick = { onConfirm(state.hour * 60 + state.minute) }) {
++                Text(stringResource(android.R.string.ok))
++            }
++        },
++        dismissButton = {
++            TextButton(onClick = onDismiss) {
++                Text(stringResource(android.R.string.cancel))
++            }
++        },
++        text = { TimePicker(state = state) },
++    )
++}
++
++// 12-hour clock with AM/PM, e.g. 3:00 AM or 10:30 PM.
++private fun formatMinutes(minutes: Int): String {
++    val hour24 = minutes / 60
++    val hour12 = if (hour24 % 12 == 0) 12 else hour24 % 12
++    val suffix = if (hour24 < 12) "AM" else "PM"
++    return String.format(Locale.getDefault(), "%d:%02d %s", hour12, minutes % 60, suffix)
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/AppLimitComponents.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/AppLimitComponents.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/AppLimitComponents.kt	2026-11-01 07:59:47.448947518 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/AppLimitComponents.kt	2026-11-01 07:59:47.464104140 +0000
+@@ -24,118 +24,6 @@
+ import androidx.compose.ui.text.style.TextAlign
+ 
+ @Composable
+-fun StatusIcon(
+-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+-    modifier: Modifier = Modifier,
+-    color: Color = MaterialTheme.colorScheme.primary,
+-    contentDescription: String? = null
+-) {
+-    Icon(
+-        imageVector = icon,
+-        contentDescription = contentDescription,
+-        modifier = modifier.size(16.dp),
+-        tint = color
+-    )
+-}
+-
+-@Composable
+-fun EmptyLimitsPlaceholder(
+-    title: String,
+-    subtitle: String,
+-    actionLabel: String? = null,
+-    onActionClick: (() -> Unit)? = null
+-) {
+-    Box(
+-        modifier = Modifier
+-            .fillMaxSize()
+-            .padding(horizontal = 24.dp),
+-        contentAlignment = Alignment.Center
+-    ) {
+-        Column(
+-            horizontalAlignment = Alignment.CenterHorizontally,
+-            verticalArrangement = Arrangement.Center,
+-            modifier = Modifier.fillMaxWidth()
+-        ) {
+-            Box(
+-                modifier = Modifier.size(140.dp),
+-                contentAlignment = Alignment.Center
+-            ) {
+-                // Outer glowing/soft ring
+-                Surface(
+-                    modifier = Modifier.size(130.dp),
+-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.05f),
+-                    shape = CircleShape
+-                ) {}
+-                // Inner ring
+-                Surface(
+-                    modifier = Modifier.size(100.dp),
+-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+-                    shape = CircleShape
+-                ) {}
+-                // Center icon background
+-                Box(
+-                    modifier = Modifier
+-                        .size(70.dp)
+-                        .background(
+-                            color = MaterialTheme.colorScheme.primaryContainer,
+-                            shape = CircleShape
+-                        ),
+-                    contentAlignment = Alignment.Center
+-                ) {
+-                    Icon(
+-                        imageVector = Icons.Rounded.Block,
+-                        contentDescription = null,
+-                        modifier = Modifier.size(32.dp),
+-                        tint = MaterialTheme.colorScheme.primary
+-                    )
+-                }
+-            }
+-            Spacer(modifier = Modifier.height(24.dp))
+-            Text(
+-                text = title,
+-                style = MaterialTheme.typography.titleLarge,
+-                fontWeight = FontWeight.Bold,
+-                color = MaterialTheme.colorScheme.onSurface,
+-                textAlign = TextAlign.Center
+-            )
+-            Spacer(modifier = Modifier.height(8.dp))
+-            Text(
+-                text = subtitle,
+-                style = MaterialTheme.typography.bodyMedium,
+-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+-                textAlign = TextAlign.Center,
+-                modifier = Modifier.padding(horizontal = 16.dp)
+-            )
+-            if (actionLabel != null && onActionClick != null) {
+-                Spacer(modifier = Modifier.height(24.dp))
+-                Button(
+-                    onClick = onActionClick,
+-                    shape = RoundedCornerShape(16.dp),
+-                    colors = ButtonDefaults.buttonColors(
+-                        containerColor = MaterialTheme.colorScheme.primary,
+-                        contentColor = MaterialTheme.colorScheme.onPrimary
+-                    ),
+-                    contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
+-                    modifier = Modifier.height(48.dp)
+-                ) {
+-                    Icon(
+-                        imageVector = Icons.Rounded.Check,
+-                        contentDescription = null,
+-                        modifier = Modifier.size(18.dp)
+-                    )
+-                    Spacer(modifier = Modifier.width(8.dp))
+-                    Text(
+-                        text = actionLabel,
+-                        style = MaterialTheme.typography.labelLarge,
+-                        fontWeight = FontWeight.Bold
+-                    )
+-                }
+-            }
+-        }
+-    }
+-}
+-
+-@Composable
+ fun LimitInputRow(
+     value: String,
+     onValueChange: (String) -> Unit,
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/AppLimitEditScreen.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/AppLimitEditScreen.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/AppLimitEditScreen.kt	2026-11-01 07:59:47.448997494 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/AppLimitEditScreen.kt	2026-11-01 07:59:47.464116724 +0000
+@@ -55,6 +55,12 @@
+         mutableStateOf(if ((limit.mobileDataLimit >= 1024L * 1024L * 1024L) && (limit.mobileDataLimit % (1024L * 1024L * 1024L) == 0L)) "GB" else "MB")
+     }
+ 
++    val (alwaysBlocked, setAlwaysBlocked) = remember(limit) { mutableStateOf(limit.isAlwaysBlocked) }
++    val (scheduleEnabled, setScheduleEnabled) = remember(limit) { mutableStateOf(limit.scheduleEnabled) }
++    val (scheduleDays, setScheduleDays) = remember(limit) { mutableStateOf(limit.scheduleDays) }
++    val (scheduleStart, setScheduleStart) = remember(limit) { mutableStateOf(limit.scheduleStartMin) }
++    val (scheduleEnd, setScheduleEnd) = remember(limit) { mutableStateOf(limit.scheduleEndMin) }
++
+     val context = LocalContext.current
+     val appIcon = remember(limit.packageName) {
+         try {
+@@ -126,6 +132,20 @@
+                     mobileLimitUnit = mobileLimitUnit,
+                     onMobileLimitUnitChange = setMobileLimitUnit,
+                     confirmButtonText = stringResource(R.string.btn_save_config),
++                    extraContent = {
++                        AppBlockRulesSection(
++                            alwaysBlocked = alwaysBlocked,
++                            onAlwaysBlockedChange = setAlwaysBlocked,
++                            scheduleEnabled = scheduleEnabled,
++                            onScheduleEnabledChange = setScheduleEnabled,
++                            scheduleDays = scheduleDays,
++                            onScheduleDaysChange = setScheduleDays,
++                            startMin = scheduleStart,
++                            onStartChange = setScheduleStart,
++                            endMin = scheduleEnd,
++                            onEndChange = setScheduleEnd,
++                        )
++                    },
+                     onCancel = onBack,
+                     onConfirm = {
+                         val value = limitInput.toLongOrNull() ?: 0L
+@@ -141,17 +161,27 @@
+                         val isMobileOver = (networkType == "both" && mobileValue == 0L) || (networkType == "mobile" && value == 0L)
+                         val isBlocked = (networkType != "both" && value == 0L) || (networkType == "both" && isWifiOver && isMobileOver)
+ 
++                        // With a schedule, blocking is decided by the schedule and not by a 0 data limit,
++                        // so empty limits are stored as "unlimited" (1 TB) to avoid blocking all day.
++                        val useSchedule = scheduleEnabled && !alwaysBlocked
++                        val unlimited = 1024L * 1024L * 1024L * 1024L
++                        fun bound(bytes: Long) = if (useSchedule && bytes == 0L) unlimited else bytes
++
+                         onConfirm(
+                             limit.copy(
+-                                dataLimit = value * multiplier,
++                                dataLimit = bound(value * multiplier),
+                                 limitType = limitType,
+                                 networkType = networkType,
+-                                wifiDataLimit = wifiValue * wifiMultiplier,
+-                                mobileDataLimit = mobileValue * mobileMultiplier,
+-                                isAlwaysBlocked = false,
+-                                isBlocked = isBlocked,
+-                                isWifiBlocked = isWifiOver,
+-                                isMobileBlocked = isMobileOver,
++                                wifiDataLimit = bound(wifiValue * wifiMultiplier),
++                                mobileDataLimit = bound(mobileValue * mobileMultiplier),
++                                isAlwaysBlocked = alwaysBlocked,
++                                isBlocked = if (useSchedule) false else isBlocked,
++                                isWifiBlocked = if (useSchedule) false else isWifiOver,
++                                isMobileBlocked = if (useSchedule) false else isMobileOver,
++                                scheduleEnabled = scheduleEnabled,
++                                scheduleDays = scheduleDays,
++                                scheduleStartMin = scheduleStart,
++                                scheduleEndMin = scheduleEnd,
+                             )
+                         )
+                     }
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/AppSelectorScreen.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/AppSelectorScreen.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/AppSelectorScreen.kt	2026-11-01 07:59:47.449067045 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/AppSelectorScreen.kt	2026-11-01 07:59:47.464131830 +0000
+@@ -978,6 +978,7 @@
+     mobileLimitUnit: String = "MB",
+     onMobileLimitUnitChange: (String) -> Unit = {},
+     confirmButtonText: String = stringResource(R.string.btn_create_app_limit),
++    extraContent: @Composable () -> Unit = {},
+     onCancel: () -> Unit = {},
+     onConfirm: () -> Unit
+ ) {
+@@ -1053,6 +1054,8 @@
+             onMobileLimitUnitChange = onMobileLimitUnitChange
+         )
+ 
++        extraContent()
++
+         Spacer(modifier = Modifier.height(24.dp))
+ 
+         Row(
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/BackupActions.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/BackupActions.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/BackupActions.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/BackupActions.kt	2026-11-01 07:59:47.464400924 +0000
+@@ -0,0 +1,81 @@
++// Launchers for saving the configuration to a file and restoring it, using the system file picker.
++package com.ray.flowmeter.ui.screens
++
++import android.app.Activity
++import android.content.Intent
++import android.widget.Toast
++import androidx.activity.compose.rememberLauncherForActivityResult
++import androidx.activity.result.contract.ActivityResultContracts
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.ui.platform.LocalContext
++import com.ray.flowmeter.R
++import com.ray.flowmeter.data.ConfigBackup
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withContext
++
++class BackupActions(val export: () -> Unit, val restore: () -> Unit)
++
++@Composable
++fun rememberBackupActions(): BackupActions {
++    val context = LocalContext.current
++    val scope = rememberCoroutineScope()
++
++    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
++        val uri = result.data?.data
++        if (result.resultCode == Activity.RESULT_OK && uri != null) {
++            scope.launch {
++                try {
++                    val json = ConfigBackup.export(context)
++                    withContext(Dispatchers.IO) {
++                        context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
++                    }
++                    Toast.makeText(context, context.getString(R.string.backup_saved), Toast.LENGTH_SHORT).show()
++                } catch (_: Exception) {
++                    Toast.makeText(context, context.getString(R.string.backup_failed), Toast.LENGTH_LONG).show()
++                }
++            }
++        }
++    }
++
++    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
++        val uri = result.data?.data
++        if (result.resultCode == Activity.RESULT_OK && uri != null) {
++            scope.launch {
++                try {
++                    val json = withContext(Dispatchers.IO) {
++                        context.contentResolver.openInputStream(uri)?.use { String(it.readBytes()) }
++                    } ?: throw IllegalStateException("Empty file")
++                    val count = ConfigBackup.import(context, json)
++                    Toast.makeText(context, context.getString(R.string.restore_done, count), Toast.LENGTH_LONG).show()
++                } catch (_: Exception) {
++                    Toast.makeText(context, context.getString(R.string.restore_failed), Toast.LENGTH_LONG).show()
++                }
++            }
++        }
++    }
++
++    return remember(exportLauncher, restoreLauncher) {
++        BackupActions(
++            export = {
++                exportLauncher.launch(
++                    Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
++                        addCategory(Intent.CATEGORY_OPENABLE)
++                        type = "application/json"
++                        putExtra(Intent.EXTRA_TITLE, "flowbytes-config.json")
++                    }
++                )
++            },
++            restore = {
++                restoreLauncher.launch(
++                    Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
++                        addCategory(Intent.CATEGORY_OPENABLE)
++                        type = "*/*"
++                    }
++                )
++            },
++        )
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/BlockedAppsSection.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/BlockedAppsSection.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/BlockedAppsSection.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/BlockedAppsSection.kt	2026-11-01 07:59:47.464370157 +0000
+@@ -0,0 +1,235 @@
++// UI for apps that are fully blocked from the internet: one row per app and a full-screen picker with icons.
++package com.ray.flowmeter.ui.screens
++
++import androidx.compose.foundation.Image
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.imePadding
++import androidx.compose.foundation.layout.navigationBarsPadding
++import androidx.compose.foundation.layout.statusBarsPadding
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.items
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.rounded.Apps
++import androidx.compose.material.icons.rounded.Delete
++import androidx.compose.material3.Button
++import androidx.compose.material3.Card
++import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.Checkbox
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Surface
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.graphics.asImageBitmap
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.Dp
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.window.Dialog
++import androidx.compose.ui.window.DialogProperties
++import androidx.core.graphics.drawable.toBitmap
++import com.ray.flowmeter.R
++import com.ray.flowmeter.data.AppLimit
++import com.ray.flowmeter.ui.viewmodels.AppLimitsViewModel
++
++// App icon inside a round container, with a generic icon when the app has none.
++@Composable
++fun AppIconCircle(packageName: String, size: Dp = 44.dp) {
++    val context = LocalContext.current
++    val icon = remember(packageName) {
++        try {
++            context.packageManager.getApplicationIcon(packageName).toBitmap(width = 96, height = 96).asImageBitmap()
++        } catch (_: Exception) {
++            null
++        }
++    }
++    Surface(
++        shape = CircleShape,
++        color = MaterialTheme.colorScheme.surfaceContainerHighest,
++        modifier = Modifier.size(size),
++    ) {
++        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
++            if (icon != null) {
++                Image(bitmap = icon, contentDescription = null, modifier = Modifier.fillMaxSize().clip(CircleShape))
++            } else {
++                Icon(
++                    imageVector = Icons.Rounded.Apps,
++                    contentDescription = null,
++                    tint = MaterialTheme.colorScheme.primary,
++                    modifier = Modifier.size(size / 2),
++                )
++            }
++        }
++    }
++}
++
++@Composable
++fun BlockedAppRow(
++    limit: AppLimit,
++    onToggle: (Boolean) -> Unit,
++    onRemove: () -> Unit,
++) {
++    Card(
++        modifier = Modifier.fillMaxWidth(),
++        shape = RoundedCornerShape(20.dp),
++        colors = CardDefaults.cardColors(
++            containerColor = if (limit.isEnabled) MaterialTheme.colorScheme.surfaceContainer
++            else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.5f)
++        ),
++    ) {
++        Row(
++            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
++            verticalAlignment = Alignment.CenterVertically,
++        ) {
++            AppIconCircle(limit.packageName, size = 44.dp)
++            Spacer(Modifier.width(12.dp))
++            Column(modifier = Modifier.weight(1f)) {
++                Text(
++                    limit.appName,
++                    style = MaterialTheme.typography.titleMedium,
++                    fontWeight = FontWeight.SemiBold,
++                    maxLines = 1,
++                    overflow = TextOverflow.Ellipsis,
++                )
++                Text(
++                    stringResource(R.string.label_blocked_subtitle),
++                    style = MaterialTheme.typography.bodySmall,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                )
++            }
++            Switch(checked = limit.isEnabled, onCheckedChange = onToggle)
++            Spacer(Modifier.width(4.dp))
++            IconButton(onClick = onRemove) {
++                Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
++            }
++        }
++    }
++}
++
++// Full-screen picker like the one used for app limits: icon, name, package and a checkbox per app.
++@Composable
++fun BlockedAppsPickerDialog(
++    title: String,
++    apps: List<AppLimitsViewModel.AppInfo>,
++    onDismiss: () -> Unit,
++    onConfirm: (List<AppLimitsViewModel.AppInfo>) -> Unit,
++) {
++    var query by remember { mutableStateOf("") }
++    var selected by remember { mutableStateOf(setOf<String>()) }
++    val shown = if (query.isBlank()) apps
++    else apps.filter { it.name.contains(query, ignoreCase = true) || it.packageName.contains(query, ignoreCase = true) }
++
++    Dialog(
++        onDismissRequest = onDismiss,
++        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
++    ) {
++        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
++            Column(
++                modifier = Modifier
++                    .fillMaxSize()
++                    .statusBarsPadding()
++                    .navigationBarsPadding()
++                    .imePadding()
++                    .padding(horizontal = 16.dp)
++            ) {
++                Spacer(Modifier.height(8.dp))
++                Row(verticalAlignment = Alignment.CenterVertically) {
++                    TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) }
++                    Spacer(Modifier.width(8.dp))
++                    Text(
++                        title,
++                        style = MaterialTheme.typography.titleLarge,
++                        fontWeight = FontWeight.Bold,
++                        modifier = Modifier.weight(1f),
++                        maxLines = 2,
++                    )
++                }
++                Spacer(Modifier.height(8.dp))
++                OutlinedTextField(
++                    value = query,
++                    onValueChange = { query = it },
++                    singleLine = true,
++                    placeholder = { Text(stringResource(R.string.placeholder_search_apps)) },
++                    shape = RoundedCornerShape(28.dp),
++                    modifier = Modifier.fillMaxWidth(),
++                )
++                Spacer(Modifier.height(8.dp))
++                LazyColumn(
++                    modifier = Modifier.weight(1f),
++                    verticalArrangement = Arrangement.spacedBy(4.dp),
++                ) {
++                    items(shown, key = { it.packageName }) { app ->
++                        val isOn = app.packageName in selected
++                        Row(
++                            modifier = Modifier
++                                .fillMaxWidth()
++                                .clickable {
++                                    selected = if (isOn) selected - app.packageName else selected + app.packageName
++                                }
++                                .padding(vertical = 8.dp),
++                            verticalAlignment = Alignment.CenterVertically,
++                        ) {
++                            AppIconCircle(app.packageName, size = 52.dp)
++                            Spacer(Modifier.width(16.dp))
++                            Column(modifier = Modifier.weight(1f)) {
++                                Text(
++                                    app.name,
++                                    style = MaterialTheme.typography.titleMedium,
++                                    fontWeight = FontWeight.Bold,
++                                    maxLines = 1,
++                                    overflow = TextOverflow.Ellipsis,
++                                )
++                                Text(
++                                    app.packageName,
++                                    style = MaterialTheme.typography.bodySmall,
++                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                                    maxLines = 1,
++                                    overflow = TextOverflow.Ellipsis,
++                                )
++                            }
++                            Checkbox(
++                                checked = isOn,
++                                onCheckedChange = {
++                                    selected = if (isOn) selected - app.packageName else selected + app.packageName
++                                },
++                            )
++                        }
++                    }
++                }
++                Button(
++                    enabled = selected.isNotEmpty(),
++                    onClick = { onConfirm(apps.filter { it.packageName in selected }) },
++                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
++                ) {
++                    Text(stringResource(android.R.string.ok) + " (" + selected.size + ")")
++                }
++            }
++        }
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/DataPlansScreen.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/DataPlansScreen.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/DataPlansScreen.kt	2026-11-01 07:59:47.449439984 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/DataPlansScreen.kt	2026-11-01 07:59:47.464181525 +0000
+@@ -247,6 +247,10 @@
+         }
+     }
+ 
++    var showBlockPicker by remember { mutableStateOf(false) }
++    val blockedApps = appLimits.filter { it.isAlwaysBlocked }
++    val limitsList = appLimits.filter { !it.isAlwaysBlocked }
++
+     Box(modifier = modifier.fillMaxSize()) {
+         LazyColumn(
+             modifier = Modifier.fillMaxSize(),
+@@ -254,6 +258,12 @@
+             verticalArrangement = Arrangement.spacedBy(16.dp)
+         ) {
+             item {
++                Box(modifier = Modifier.padding(horizontal = 20.dp)) {
++                    PerformanceModeSection(viewModel)
++                }
++            }
++
++            item {
+                 Row(
+                     modifier = Modifier
+                         .fillMaxWidth()
+@@ -262,67 +272,41 @@
+                     verticalAlignment = Alignment.CenterVertically
+                 ) {
+                     Text(
+-                        text = stringResource(R.string.title_general_limits),
++                        text = stringResource(R.string.label_blocked_apps),
+                         style = MaterialTheme.typography.titleMedium,
+                         fontWeight = FontWeight.Bold,
+                         color = MaterialTheme.colorScheme.primary
+                     )
+-                    
+-                    if (!allGeneralLimitsConfigured) {
+-                        TextButton(
+-                            onClick = {
+-                                if (unconfiguredPlans.size == 1) {
+-                                    viewModel.configuringGeneralLimitType = unconfiguredPlans.first()
+-                                } else {
+-                                    showAddGeneralLimitDialog = true
+-                                }
+-                            }
+-                        ) {
+-                            Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+-                            Spacer(modifier = Modifier.width(4.dp))
+-                            Text(stringResource(R.string.btn_add_plan), style = MaterialTheme.typography.labelMedium)
++                    TextButton(
++                        onClick = {
++                            viewModel.loadInstalledApps()
++                            showBlockPicker = true
+                         }
++                    ) {
++                        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
++                        Spacer(modifier = Modifier.width(4.dp))
++                        Text(stringResource(R.string.btn_add_blocked_app), style = MaterialTheme.typography.labelMedium)
+                     }
+                 }
+             }
+ 
+-            if (activePlansList.isEmpty()) {
++            if (blockedApps.isEmpty()) {
+                 item {
+-                    Box(modifier = Modifier.padding(horizontal = 20.dp)) {
+-                        SetupPlanPlaceholderTile(
+-                            onClick = { showAddGeneralLimitDialog = true }
+-                        )
+-                    }
++                    Text(
++                        text = stringResource(R.string.msg_no_blocked_apps),
++                        style = MaterialTheme.typography.bodyMedium,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant,
++                        modifier = Modifier.padding(horizontal = 20.dp)
++                    )
+                 }
+             } else {
+-                itemsIndexed(activePlansList) { index, plan ->
++                items(blockedApps, key = { it.packageName }) { blocked ->
+                     Box(modifier = Modifier.padding(horizontal = 20.dp)) {
+-                        StaggeredEntrance(index = index) {
+-                            SystemPlanCard(
+-                                title = plan.title,
+-                                usage = plan.usage,
+-                                limit = plan.limit,
+-                                enabled = plan.enabled,
+-                                isWifi = plan.isWifi,
+-                                subtitle = plan.subtitle,
+-                                onToggle = plan.onToggle,
+-                                onCardClick = { viewModel.configuringGeneralLimitType = plan.type },
+-                                onDelete = {
+-                                    val title = plan.title
+-                                    val pType = plan.type
+-                                    val limitVal = plan.limit
+-                                    val netType = if (plan.isWifi) "wifi" else "mobile"
+-                                    val periodType = if (pType.startsWith("daily")) "daily" else if (pType.startsWith("monthly")) "monthly" else "custom"
+-                                    limitToDelete = AppLimit(
+-                                        packageName = "system.${netType}.${periodType}",
+-                                        appName = title,
+-                                        dataLimit = limitVal,
+-                                        limitType = periodType,
+-                                        networkType = netType
+-                                    )
+-                                }
+-                            )
+-                        }
++                        BlockedAppRow(
++                            limit = blocked,
++                            onToggle = { enabled -> viewModel.updateAppLimit(blocked.copy(isEnabled = enabled)) },
++                            onRemove = { viewModel.unblockApp(blocked) }
++                        )
+                     }
+                 }
+             }
+@@ -355,7 +339,7 @@
+                 }
+             }
+ 
+-            if (appLimits.isEmpty()) {
++            if (limitsList.isEmpty()) {
+                 item {
+                     EmptyAppLimitsPlaceholder(
+                         onAddClick = {
+@@ -365,7 +349,7 @@
+                     )
+                 }
+             } else {
+-                itemsIndexed(appLimits.asReversed()) { index, limit ->
++                itemsIndexed(limitsList.asReversed()) { index, limit ->
+                     Box(modifier = Modifier.padding(horizontal = 20.dp)) {
+                         StaggeredEntrance(index = activePlansList.size + index) {
+                             AppLimitItem(
+@@ -383,6 +367,18 @@
+ 
+     }
+ 
++    if (showBlockPicker) {
++        BlockedAppsPickerDialog(
++            title = stringResource(R.string.title_pick_apps_to_block),
++            apps = viewModel.installedApps.filter { app -> blockedApps.none { it.packageName == app.packageName } },
++            onDismiss = { showBlockPicker = false },
++            onConfirm = { chosen ->
++                viewModel.blockAppsCompletely(chosen)
++                showBlockPicker = false
++            }
++        )
++    }
++
+     if (limitToDelete != null) {
+         AlertDialog(
+             onDismissRequest = { limitToDelete = null },
+@@ -453,8 +449,6 @@
+     val wifiCustomLimitStart by viewModel.wifiCustomLimitStart.collectAsState()
+     val wifiCustomLimitEnd by viewModel.wifiCustomLimitEnd.collectAsState()
+ 
+-
+-
+     if (editingLimit != null) {
+         AppLimitEditScreen(
+             limit = editingLimit,
+@@ -535,502 +529,6 @@
+ }
+ 
+ @Composable
+-fun MinimalPillsRow(
+-    selectedTab: Int,
+-    onTabChange: (Int) -> Unit,
+-    modifier: Modifier = Modifier
+-) {
+-    val tabs = listOf(
+-        stringResource(R.string.title_general_limits),
+-        stringResource(R.string.label_app_limits)
+-    )
+-
+-    BoxWithConstraints(
+-        modifier = modifier
+-            .fillMaxWidth()
+-            .padding(horizontal = 16.dp)
+-            .height(48.dp)
+-            .clip(RoundedCornerShape(24.dp))
+-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+-            .padding(4.dp)
+-    ) {
+-        val width = maxWidth
+-        val indicatorWidth = width / 2
+-        val targetOffset = if (selectedTab == 0) 0.dp else indicatorWidth
+-        val animatedOffset by animateDpAsState(
+-            targetValue = targetOffset,
+-            animationSpec = premiumSpring<Dp>(),
+-            label = "TabIndicatorOffset"
+-        )
+-
+-        Box(
+-            modifier = Modifier
+-                .fillMaxHeight()
+-                .width(indicatorWidth)
+-                .offset(x = animatedOffset)
+-                .clip(RoundedCornerShape(20.dp))
+-                .background(MaterialTheme.colorScheme.primaryContainer)
+-        )
+-
+-        Row(
+-            modifier = Modifier.fillMaxSize(),
+-            verticalAlignment = Alignment.CenterVertically
+-        ) {
+-            tabs.forEachIndexed { index, label ->
+-                val selected = selectedTab == index
+-                val textColor by animateColorAsState(
+-                    targetValue = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+-                                  else MaterialTheme.colorScheme.onSurfaceVariant,
+-                    animationSpec = premiumSpring(),
+-                    label = "TabTextColor"
+-                )
+-
+-                Box(
+-                    modifier = Modifier
+-                        .weight(1f)
+-                        .fillMaxHeight()
+-                        .clip(RoundedCornerShape(20.dp))
+-                        .clickable(
+-                            interactionSource = remember { MutableInteractionSource() },
+-                            indication = null
+-                        ) {
+-                            onTabChange(index)
+-                        },
+-                    contentAlignment = Alignment.Center
+-                ) {
+-                    Text(
+-                        text = label,
+-                        style = MaterialTheme.typography.labelLarge,
+-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+-                        color = textColor
+-                    )
+-                }
+-            }
+-        }
+-    }
+-}
+-
+-@Composable
+-fun GeneralLimitsList(
+-    viewModel: AppLimitsViewModel,
+-    onEdit: (String) -> Unit,
+-    onDelete: (AppLimit) -> Unit,
+-    onAddPlanClick: () -> Unit
+-) {
+-    val dataDailyLimitEnabled by viewModel.dataDailyLimitEnabled.collectAsState()
+-    val dataMonthlyLimitEnabled by viewModel.dataMonthlyLimitEnabled.collectAsState()
+-    val wifiDailyLimitEnabled by viewModel.wifiDailyLimitEnabled.collectAsState()
+-    val wifiMonthlyLimitEnabled by viewModel.wifiMonthlyLimitEnabled.collectAsState()
+-    val dataCustomLimitEnabled by viewModel.dataCustomLimitEnabled.collectAsState()
+-    val wifiCustomLimitEnabled by viewModel.wifiCustomLimitEnabled.collectAsState()
+-
+-    val dataDailyLimitConfigured by viewModel.dataDailyLimitConfigured.collectAsState()
+-    val dataMonthlyLimitConfigured by viewModel.dataMonthlyLimitConfigured.collectAsState()
+-    val wifiDailyLimitConfigured by viewModel.wifiDailyLimitConfigured.collectAsState()
+-    val wifiMonthlyLimitConfigured by viewModel.wifiMonthlyLimitConfigured.collectAsState()
+-    val dataCustomLimitConfigured by viewModel.dataCustomLimitConfigured.collectAsState()
+-    val wifiCustomLimitConfigured by viewModel.wifiCustomLimitConfigured.collectAsState()
+-
+-    val dataDailyLimit by viewModel.dataDailyLimit.collectAsState()
+-    val wifiDailyLimit by viewModel.wifiDailyLimit.collectAsState()
+-    val dataMonthlyLimit by viewModel.dataMonthlyLimit.collectAsState()
+-    val wifiMonthlyLimit by viewModel.wifiMonthlyLimit.collectAsState()
+-    val dataCustomLimit by viewModel.dataCustomLimit.collectAsState()
+-    val wifiCustomLimit by viewModel.wifiCustomLimit.collectAsState()
+-
+-    val dataCustomLimitStart by viewModel.dataCustomLimitStart.collectAsState()
+-    val dataCustomLimitEnd by viewModel.dataCustomLimitEnd.collectAsState()
+-    val wifiCustomLimitStart by viewModel.wifiCustomLimitStart.collectAsState()
+-    val wifiCustomLimitEnd by viewModel.wifiCustomLimitEnd.collectAsState()
+-
+-    val currentMobileUsage by viewModel.currentMobileUsage.collectAsState()
+-    val currentWifiUsage by viewModel.currentWifiUsage.collectAsState()
+-    val currentMonthlyMobileUsage by viewModel.currentMonthlyMobileUsage.collectAsState()
+-    val currentMonthlyWifiUsage by viewModel.currentMonthlyWifiUsage.collectAsState()
+-    val currentCustomMobileUsage by viewModel.currentCustomMobileUsage.collectAsState()
+-    val currentCustomWifiUsage by viewModel.currentCustomWifiUsage.collectAsState()
+-
+-    val anyLimitConfigured = dataDailyLimitConfigured || dataMonthlyLimitConfigured ||
+-            wifiDailyLimitConfigured || wifiMonthlyLimitConfigured ||
+-            dataCustomLimitConfigured || wifiCustomLimitConfigured
+-
+-    fun formatRange(start: Long, end: Long): String {
+-        val sdf = java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault())
+-        return "${sdf.format(java.util.Date(start))} - ${sdf.format(java.util.Date(end))}"
+-    }
+-
+-    Box(modifier = Modifier.fillMaxSize()) {
+-        if (!anyLimitConfigured) {
+-            EmptyLimitsPlaceholder(
+-                title = stringResource(R.string.msg_no_general_limits),
+-                subtitle = stringResource(R.string.desc_add_general_limit_subtitle),
+-                actionLabel = stringResource(R.string.label_general_limit_selection),
+-                onActionClick = onAddPlanClick
+-            )
+-        } else {
+-            LazyColumn(
+-                modifier = Modifier.fillMaxSize(),
+-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 24.dp),
+-                verticalArrangement = Arrangement.spacedBy(16.dp)
+-            ) {
+-                if (wifiDailyLimitConfigured) {
+-                    item {
+-                        val title = stringResource(R.string.label_daily_wifi)
+-                        GeneralLimitItem(
+-                            title = title,
+-                            icon = Icons.Rounded.Wifi,
+-                            currentUsage = currentWifiUsage,
+-                            limit = wifiDailyLimit,
+-                            onToggle = { viewModel.setWifiDailyLimitEnabled(it) },
+-                            onEdit = { onEdit("daily_wifi") },
+-                            onDelete = { onDelete(AppLimit(packageName = "system.wifi.daily", appName = title, dataLimit = wifiDailyLimit, limitType = "daily", networkType = "wifi")) },
+-                            enabled = wifiDailyLimitEnabled,
+-                        )
+-                    }
+-                }
+-                if (dataDailyLimitConfigured) {
+-                    item {
+-                        val title = stringResource(R.string.label_daily_mobile)
+-                        GeneralLimitItem(
+-                            title = title,
+-                            icon = Icons.Rounded.SignalCellularAlt,
+-                            currentUsage = currentMobileUsage,
+-                            limit = dataDailyLimit,
+-                            onToggle = { viewModel.setDataDailyLimitEnabled(it) },
+-                            onEdit = { onEdit("daily_mobile") },
+-                            onDelete = { onDelete(AppLimit(packageName = "system.mobile.daily", appName = title, dataLimit = dataDailyLimit, limitType = "daily", networkType = "mobile")) },
+-                            enabled = dataDailyLimitEnabled,
+-                        )
+-                    }
+-                }
+-                if (wifiMonthlyLimitConfigured) {
+-                    item {
+-                        val title = stringResource(R.string.label_monthly_wifi)
+-                        GeneralLimitItem(
+-                            title = title,
+-                            icon = Icons.Rounded.Wifi,
+-                            currentUsage = currentMonthlyWifiUsage,
+-                            limit = wifiMonthlyLimit,
+-                            onToggle = { viewModel.setWifiMonthlyLimitEnabled(it) },
+-                            onEdit = { onEdit("monthly_wifi") },
+-                            onDelete = { onDelete(AppLimit(packageName = "system.wifi.monthly", appName = title, dataLimit = wifiMonthlyLimit, limitType = "monthly", networkType = "wifi")) },
+-                            enabled = wifiMonthlyLimitEnabled,
+-                        )
+-                    }
+-                }
+-                if (dataMonthlyLimitConfigured) {
+-                    item {
+-                        val title = stringResource(R.string.label_monthly_mobile)
+-                        GeneralLimitItem(
+-                            title = title,
+-                            icon = Icons.Rounded.SignalCellularAlt,
+-                            currentUsage = currentMonthlyMobileUsage,
+-                            limit = dataMonthlyLimit,
+-                            onToggle = { viewModel.setDataMonthlyLimitEnabled(it) },
+-                            onEdit = { onEdit("monthly_mobile") },
+-                            onDelete = { onDelete(AppLimit(packageName = "system.mobile.monthly", appName = title, dataLimit = dataMonthlyLimit, limitType = "monthly", networkType = "mobile")) },
+-                            enabled = dataMonthlyLimitEnabled,
+-                        )
+-                    }
+-                }
+-                if (wifiCustomLimitConfigured) {
+-                    item {
+-                        val title = stringResource(R.string.label_custom_wifi)
+-                        GeneralLimitItem(
+-                            title = title,
+-                            icon = Icons.Rounded.Wifi,
+-                            currentUsage = currentCustomWifiUsage,
+-                            limit = wifiCustomLimit,
+-                            onToggle = { viewModel.setWifiCustomLimitEnabled(it) },
+-                            onEdit = { onEdit("custom_wifi") },
+-                            onDelete = { onDelete(AppLimit(packageName = "system.wifi.custom", appName = title, dataLimit = wifiCustomLimit, limitType = "custom", networkType = "wifi")) },
+-                            enabled = wifiCustomLimitEnabled,
+-                            subtitle = formatRange(wifiCustomLimitStart, wifiCustomLimitEnd)
+-                        )
+-                    }
+-                }
+-                if (dataCustomLimitConfigured) {
+-                    item {
+-                        val title = stringResource(R.string.label_custom_mobile)
+-                        GeneralLimitItem(
+-                            title = title,
+-                            icon = Icons.Rounded.SignalCellularAlt,
+-                            currentUsage = currentCustomMobileUsage,
+-                            limit = dataCustomLimit,
+-                            onToggle = { viewModel.setDataCustomLimitEnabled(it) },
+-                            onEdit = { onEdit("custom_mobile") },
+-                            onDelete = { onDelete(AppLimit(packageName = "system.mobile.custom", appName = title, dataLimit = dataCustomLimit, limitType = "custom", networkType = "mobile")) },
+-                            enabled = dataCustomLimitEnabled,
+-                            subtitle = formatRange(dataCustomLimitStart, dataCustomLimitEnd)
+-                        )
+-                    }
+-                }
+-            }
+-        }
+-    }
+-}
+-
+-@Composable
+-fun AppLimitsList(
+-    viewModel: AppLimitsViewModel,
+-    onEdit: (AppLimit) -> Unit,
+-    onDelete: (AppLimit) -> Unit,
+-    onAddLimitClick: () -> Unit
+-) {
+-    val appLimits by viewModel.appLimits.collectAsState()
+-    val appBlockingMasterEnabled by viewModel.appBlockingMasterEnabled.collectAsState()
+-
+-    Box(modifier = Modifier.fillMaxSize()) {
+-        if (appLimits.isEmpty()) {
+-            EmptyLimitsPlaceholder(
+-                title = stringResource(R.string.msg_no_app_limits),
+-                subtitle = stringResource(R.string.desc_restrict_app_subtitle),
+-                actionLabel = stringResource(R.string.cd_add_app_limit),
+-                onActionClick = onAddLimitClick
+-            )
+-        } else {
+-            LazyColumn(
+-                modifier = Modifier.fillMaxSize(),
+-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 24.dp),
+-                verticalArrangement = Arrangement.spacedBy(16.dp)
+-            ) {
+-                items(appLimits.asReversed()) { limit ->
+-                    StaggeredEntrance {
+-                        AppLimitItem(
+-                            limit = limit,
+-                            onToggle = { enabled -> viewModel.updateAppLimit(limit.copy(isEnabled = enabled)) },
+-                            onDelete = { onDelete(limit) },
+-                            onEdit = { onEdit(limit) },
+-                            appBlockingMasterEnabled = appBlockingMasterEnabled
+-                        )
+-                    }
+-                }
+-            }
+-        }
+-    }
+-}
+-
+-@Composable
+-fun GeneralLimitItem(
+-    title: String,
+-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+-    currentUsage: Long,
+-    limit: Long,
+-    onToggle: (Boolean) -> Unit,
+-    onEdit: () -> Unit,
+-    onDelete: () -> Unit,
+-    enabled: Boolean,
+-    subtitle: String? = null,
+-) {
+-    var expanded by remember { mutableStateOf(false) }
+-    val progress = if (limit > 0) (currentUsage.toFloat() / limit).coerceIn(0f, 1f) else 0f
+-    val isOverLimitValue = enabled && (limit > 0) && (currentUsage >= limit)
+-    
+-    val accentColor = when (icon) {
+-        Icons.Rounded.Wifi -> MaterialTheme.colorScheme.secondary
+-        Icons.Rounded.SignalCellularAlt -> MaterialTheme.colorScheme.tertiary
+-        else -> MaterialTheme.colorScheme.primary
+-    }
+-
+-    Card(
+-        modifier = Modifier
+-            .fillMaxWidth()
+-            .animateContentSize()
+-            .bounceClick { expanded = !expanded },
+-        shape = RoundedCornerShape(24.dp),
+-        colors = CardDefaults.cardColors(
+-            containerColor = if (enabled) MaterialTheme.colorScheme.surfaceContainer
+-                            else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.5f)
+-        ),
+-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+-        border = BorderStroke(
+-            width = if (enabled) 1.5.dp else 1.dp,
+-            color = if (enabled) accentColor.copy(alpha = 0.25f)
+-                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+-        )
+-    ) {
+-        Column(modifier = Modifier.padding(20.dp)) {
+-            Row(
+-                verticalAlignment = Alignment.CenterVertically,
+-                modifier = Modifier.fillMaxWidth()
+-            ) {
+-                Box(
+-                    modifier = Modifier
+-                        .size(44.dp)
+-                        .background(
+-                            color = if (enabled) accentColor.copy(alpha = 0.12f)
+-                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.06f),
+-                            shape = RoundedCornerShape(12.dp)
+-                        ),
+-                    contentAlignment = Alignment.Center
+-                ) {
+-                    Icon(
+-                        imageVector = icon,
+-                        contentDescription = null,
+-                        tint = if (enabled) accentColor else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+-                        modifier = Modifier.size(22.dp)
+-                    )
+-                }
+-                
+-                Spacer(Modifier.width(16.dp))
+-                
+-                Column(modifier = Modifier.weight(1f)) {
+-                    Row(
+-                        verticalAlignment = Alignment.CenterVertically
+-                    ) {
+-                        Text(
+-                            text = title,
+-                            style = MaterialTheme.typography.titleMedium,
+-                            fontWeight = FontWeight.Bold,
+-                            color = if (enabled) MaterialTheme.colorScheme.onSurface
+-                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+-                            maxLines = 1,
+-                            overflow = TextOverflow.Ellipsis,
+-                            modifier = Modifier.weight(1f, fill = false)
+-                        )
+-                        if (isOverLimitValue) {
+-                            Spacer(Modifier.width(8.dp))
+-                            StatusIcon(
+-                                icon = Icons.Rounded.Error,
+-                                color = MaterialTheme.colorScheme.error,
+-                                contentDescription = stringResource(R.string.badge_limit_reached)
+-                            )
+-                        }
+-                    }
+-                    if (subtitle != null) {
+-                        Spacer(Modifier.height(2.dp))
+-                        Text(
+-                            text = subtitle,
+-                            style = MaterialTheme.typography.bodySmall,
+-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.8f else 0.5f),
+-                            maxLines = 1,
+-                            overflow = TextOverflow.Ellipsis
+-                        )
+-                    }
+-                }
+-
+-                Spacer(Modifier.width(8.dp))
+-
+-                Switch(
+-                    checked = enabled,
+-                    onCheckedChange = onToggle,
+-                    colors = SwitchDefaults.colors(
+-                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+-                        checkedTrackColor = accentColor,
+-                        uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+-                        uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+-                    ),
+-                    modifier = Modifier.scale(0.8f)
+-                )
+-            }
+-
+-            if (enabled) {
+-                Spacer(modifier = Modifier.height(20.dp))
+-                
+-                Box(
+-                    modifier = Modifier
+-                        .fillMaxWidth()
+-                        .height(8.dp)
+-                        .clip(CircleShape)
+-                        .background(accentColor.copy(alpha = 0.15f))
+-                ) {
+-                    Box(
+-                        modifier = Modifier
+-                            .fillMaxHeight()
+-                            .fillMaxWidth(progress)
+-                            .background(
+-                                color = if (isOverLimitValue) MaterialTheme.colorScheme.error else accentColor,
+-                                shape = CircleShape
+-                            )
+-                    )
+-                }
+-
+-                Spacer(modifier = Modifier.height(10.dp))
+-
+-                Row(
+-                    modifier = Modifier.fillMaxWidth(),
+-                    horizontalArrangement = Arrangement.SpaceBetween,
+-                    verticalAlignment = Alignment.CenterVertically
+-                ) {
+-                    Box(
+-                        modifier = Modifier
+-                            .background(
+-                                color = if (isOverLimitValue) MaterialTheme.colorScheme.errorContainer
+-                                        else accentColor.copy(alpha = 0.1f),
+-                                shape = RoundedCornerShape(8.dp)
+-                            )
+-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+-                    ) {
+-                        Text(
+-                            text = "${(progress * 100).toInt()}%",
+-                            style = MaterialTheme.typography.labelSmall,
+-                            fontWeight = FontWeight.Bold,
+-                            color = if (isOverLimitValue) MaterialTheme.colorScheme.onErrorContainer else accentColor
+-                        )
+-                    }
+-
+-                    Row(verticalAlignment = Alignment.Bottom) {
+-                        Text(
+-                            text = formatUsage(currentUsage),
+-                            style = MaterialTheme.typography.titleMedium,
+-                            fontWeight = FontWeight.ExtraBold,
+-                            color = MaterialTheme.colorScheme.onSurface
+-                        )
+-                        Text(
+-                            text = " / ${formatUsage(limit)}",
+-                            style = MaterialTheme.typography.bodySmall,
+-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+-                            fontWeight = FontWeight.Medium,
+-                            modifier = Modifier.padding(bottom = 1.dp)
+-                        )
+-                    }
+-                }
+-            }
+-
+-            AnimatedVisibility(
+-                visible = expanded,
+-                enter = fadeIn() + expandVertically(),
+-                exit = fadeOut() + shrinkVertically()
+-            ) {
+-                Column {
+-                    Spacer(modifier = Modifier.height(16.dp))
+-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+-                    Spacer(modifier = Modifier.height(14.dp))
+-                    
+-                    Row(
+-                        modifier = Modifier.fillMaxWidth(),
+-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+-                    ) {
+-                        IconButton(
+-                            onClick = onEdit,
+-                            modifier = Modifier.size(36.dp)
+-                        ) {
+-                            Icon(
+-                                imageVector = Icons.Rounded.Edit,
+-                                contentDescription = stringResource(R.string.btn_edit),
+-                                tint = MaterialTheme.colorScheme.primary,
+-                                modifier = Modifier.size(18.dp)
+-                            )
+-                        }
+-
+-                        IconButton(
+-                            onClick = onDelete,
+-                            modifier = Modifier.size(36.dp)
+-                        ) {
+-                            Icon(
+-                                imageVector = Icons.Rounded.Delete,
+-                                contentDescription = stringResource(R.string.btn_delete),
+-                                tint = MaterialTheme.colorScheme.error,
+-                                modifier = Modifier.size(18.dp)
+-                            )
+-                        }
+-                    }
+-                }
+-            }
+-        }
+-    }
+-}
+-@Composable
+ fun AppLimitItem(
+     limit: AppLimit,
+     onToggle: (Boolean) -> Unit,
+@@ -1410,64 +908,6 @@
+     }
+ }
+ 
+-@OptIn(ExperimentalMaterial3Api::class)
+-@Composable
+-fun LimitTypeSelectionDialog(
+-    onDismiss: () -> Unit,
+-    onAppLimitSelected: () -> Unit,
+-    onGeneralLimitSelected: () -> Unit
+-) {
+-    AlertDialog(
+-        onDismissRequest = onDismiss,
+-        title = { Text(stringResource(R.string.title_choose_limit_type), fontWeight = FontWeight.Black) },
+-        text = {
+-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+-                Surface(
+-                    onClick = onGeneralLimitSelected,
+-                    shape = RoundedCornerShape(16.dp),
+-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+-                    modifier = Modifier.fillMaxWidth()
+-                ) {
+-                    Row(
+-                        modifier = Modifier.padding(16.dp),
+-                        verticalAlignment = Alignment.CenterVertically
+-                    ) {
+-                        Icon(Icons.Rounded.Public, null, tint = MaterialTheme.colorScheme.primary)
+-                        Spacer(Modifier.width(16.dp))
+-                        Column {
+-                            Text(stringResource(R.string.label_general_limit_selection), fontWeight = FontWeight.Bold)
+-                            Text(stringResource(R.string.desc_general_limit_selection), style = MaterialTheme.typography.bodySmall)
+-                        }
+-                    }
+-                }
+-
+-                Surface(
+-                    onClick = onAppLimitSelected,
+-                    shape = RoundedCornerShape(16.dp),
+-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+-                    modifier = Modifier.fillMaxWidth()
+-                ) {
+-                    Row(
+-                        modifier = Modifier.padding(16.dp),
+-                        verticalAlignment = Alignment.CenterVertically
+-                    ) {
+-                        Icon(Icons.Rounded.Apps, null, tint = MaterialTheme.colorScheme.secondary)
+-                        Spacer(Modifier.width(16.dp))
+-                        Column {
+-                            Text(stringResource(R.string.label_app_limit_selection), fontWeight = FontWeight.Bold)
+-                            Text(stringResource(R.string.desc_app_limit_selection), style = MaterialTheme.typography.bodySmall)
+-                        }
+-                    }
+-                }
+-            }
+-        },
+-        confirmButton = {},
+-        dismissButton = {
+-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.btn_cancel)) }
+-        }
+-    )
+-}
+-
+ @Composable
+ fun AddGeneralLimitDialog(
+     unconfiguredPlans: List<String>,
+@@ -1557,345 +997,6 @@
+ }
+ 
+ @Composable
+-fun SystemPlanCard(
+-    title: String,
+-    usage: Long,
+-    limit: Long,
+-    enabled: Boolean,
+-    isWifi: Boolean,
+-    subtitle: String? = null,
+-    onToggle: (Boolean) -> Unit,
+-    onCardClick: () -> Unit,
+-    onDelete: () -> Unit
+-) {
+-    val progress = if (limit > 0) (usage.toFloat() / limit).coerceIn(0f, 1f) else 0f
+-    val isOverLimit = enabled && (limit > 0) && (usage >= limit)
+-    
+-    val accentColor = MaterialTheme.colorScheme.secondary
+-    
+-    val backgroundBrush = if (enabled) {
+-        Brush.linearGradient(
+-            colors = listOf(
+-                MaterialTheme.colorScheme.secondary,
+-                MaterialTheme.colorScheme.secondaryContainer
+-            )
+-        )
+-    } else {
+-        Brush.linearGradient(
+-            colors = listOf(
+-                MaterialTheme.colorScheme.surfaceContainerLow,
+-                MaterialTheme.colorScheme.surfaceContainerLow
+-            )
+-        )
+-    }
+-
+-    Card(
+-        modifier = Modifier
+-            .fillMaxWidth()
+-            .height(145.dp)
+-            .bounceClick { onCardClick() },
+-        shape = RoundedCornerShape(24.dp),
+-        border = BorderStroke(
+-            width = if (enabled) 2.dp else 1.dp,
+-            color = if (enabled) accentColor.copy(alpha = 0.35f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
+-        ),
+-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+-    ) {
+-        Box(
+-            modifier = Modifier
+-                .fillMaxSize()
+-                .background(backgroundBrush)
+-                .padding(20.dp)
+-        ) {
+-            if (enabled) {
+-                Box(
+-                    modifier = Modifier
+-                        .size(100.dp)
+-                        .offset(x = 180.dp, y = (-40).dp)
+-                        .background(Color.White.copy(alpha = 0.06f), CircleShape)
+-                )
+-                Box(
+-                    modifier = Modifier
+-                        .size(60.dp)
+-                        .offset(x = 210.dp, y = 60.dp)
+-                        .background(Color.White.copy(alpha = 0.08f), CircleShape)
+-                )
+-            }
+-
+-            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+-                Row(
+-                    modifier = Modifier.fillMaxWidth(),
+-                    horizontalArrangement = Arrangement.SpaceBetween,
+-                    verticalAlignment = Alignment.CenterVertically
+-                ) {
+-                    Row(verticalAlignment = Alignment.CenterVertically) {
+-                        Box(
+-                            modifier = Modifier
+-                                .size(36.dp)
+-                                .background(
+-                                    color = if (enabled) Color.White.copy(alpha = 0.15f)
+-                                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+-                                    shape = RoundedCornerShape(10.dp)
+-                                ),
+-                            contentAlignment = Alignment.Center
+-                        ) {
+-                            Icon(
+-                                imageVector = if (isWifi) Icons.Rounded.Wifi else Icons.Rounded.SignalCellularAlt,
+-                                contentDescription = null,
+-                                tint = if (enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+-                                modifier = Modifier.size(18.dp)
+-                            )
+-                        }
+-                        Spacer(modifier = Modifier.width(10.dp))
+-                        Column {
+-                            Text(
+-                                text = title,
+-                                style = MaterialTheme.typography.titleMedium,
+-                                fontWeight = FontWeight.Bold,
+-                                color = if (enabled) Color.White else MaterialTheme.colorScheme.onSurface
+-                            )
+-                            if (subtitle != null) {
+-                                Text(
+-                                    text = subtitle,
+-                                    style = MaterialTheme.typography.labelSmall,
+-                                    color = if (enabled) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+-                                )
+-                            }
+-                        }
+-                    }
+-
+-                    Switch(
+-                        checked = enabled,
+-                        onCheckedChange = onToggle,
+-                        colors = SwitchDefaults.colors(
+-                            checkedThumbColor = if (enabled) Color.White else MaterialTheme.colorScheme.outline,
+-                            checkedTrackColor = if (enabled) Color.White.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceContainerHigh,
+-                            uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+-                            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+-                        ),
+-                        modifier = Modifier.scale(0.7f)
+-                    )
+-                }
+-
+-                if (enabled) {
+-                    Column(modifier = Modifier.fillMaxWidth()) {
+-                        Row(
+-                            modifier = Modifier.fillMaxWidth(),
+-                            horizontalArrangement = Arrangement.SpaceBetween,
+-                            verticalAlignment = Alignment.CenterVertically
+-                        ) {
+-                            Row(verticalAlignment = Alignment.Bottom) {
+-                                Text(
+-                                    text = formatUsage(usage),
+-                                    style = MaterialTheme.typography.titleLarge,
+-                                    fontWeight = FontWeight.Black,
+-                                    color = Color.White
+-                                )
+-                                Text(
+-                                    text = " / ${formatUsage(limit)}",
+-                                    style = MaterialTheme.typography.labelSmall,
+-                                    color = Color.White.copy(alpha = 0.8f),
+-                                    modifier = Modifier.padding(bottom = 2.dp)
+-                                )
+-                            }
+-                            Text(
+-                                text = "${(progress * 100).toInt()}%",
+-                                style = MaterialTheme.typography.labelMedium,
+-                                fontWeight = FontWeight.ExtraBold,
+-                                color = if (isOverLimit) MaterialTheme.colorScheme.error else Color.White
+-                            )
+-                        }
+-                        Spacer(modifier = Modifier.height(8.dp))
+-                        Box(
+-                            modifier = Modifier
+-                                .fillMaxWidth()
+-                                .height(6.dp)
+-                                .clip(CircleShape)
+-                                .background(Color.White.copy(alpha = 0.2f))
+-                        ) {
+-                            Box(
+-                                modifier = Modifier
+-                                    .fillMaxHeight()
+-                                    .fillMaxWidth(progress)
+-                                    .background(
+-                                        color = if (isOverLimit) MaterialTheme.colorScheme.error else Color.White,
+-                                        shape = CircleShape
+-                                    )
+-                            )
+-                        }
+-                    }
+-                } else {
+-                    Row(
+-                        modifier = Modifier.fillMaxWidth(),
+-                        horizontalArrangement = Arrangement.SpaceBetween,
+-                        verticalAlignment = Alignment.CenterVertically
+-                    ) {
+-                        Text(
+-                            text = stringResource(R.string.label_inactive),
+-                            style = MaterialTheme.typography.labelLarge,
+-                            fontWeight = FontWeight.SemiBold,
+-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+-                        )
+-                        IconButton(
+-                            onClick = onDelete,
+-                            modifier = Modifier.size(36.dp)
+-                        ) {
+-                            Icon(
+-                                imageVector = Icons.Rounded.Delete,
+-                                contentDescription = stringResource(R.string.cd_delete_plan),
+-                                tint = MaterialTheme.colorScheme.error,
+-                                modifier = Modifier.size(18.dp)
+-                            )
+-                        }
+-                    }
+-                }
+-            }
+-        }
+-    }
+-}
+-
+-@Composable
+-fun SetupPlanPlaceholderTile(
+-    onClick: () -> Unit
+-) {
+-    val outlineColor = MaterialTheme.colorScheme.outlineVariant
+-    Card(
+-        modifier = Modifier
+-            .fillMaxWidth()
+-            .heightIn(min = 145.dp)
+-            .bounceClick { onClick() },
+-        shape = RoundedCornerShape(24.dp),
+-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+-    ) {
+-        Box(
+-            modifier = Modifier
+-                .fillMaxWidth()
+-                .heightIn(min = 145.dp)
+-                .drawBehind {
+-                    val stroke = Stroke(
+-                        width = 4f,
+-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(15f, 15f), 0f)
+-                    )
+-                    drawRoundRect(
+-                        color = outlineColor,
+-                        style = stroke,
+-                        cornerRadius = CornerRadius(24.dp.toPx(), 24.dp.toPx())
+-                    )
+-                }
+-                .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.4f), RoundedCornerShape(24.dp))
+-                .padding(20.dp),
+-            contentAlignment = Alignment.Center
+-        ) {
+-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+-                Box(
+-                    modifier = Modifier
+-                        .size(44.dp)
+-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+-                    contentAlignment = Alignment.Center
+-                ) {
+-                    Icon(
+-                        imageVector = Icons.Rounded.Add,
+-                        contentDescription = null,
+-                        tint = MaterialTheme.colorScheme.primary,
+-                        modifier = Modifier.size(22.dp)
+-                    )
+-                }
+-                Spacer(modifier = Modifier.height(12.dp))
+-                Text(
+-                    text = stringResource(R.string.label_configure_network_plan),
+-                    style = MaterialTheme.typography.titleMedium,
+-                    fontWeight = FontWeight.Bold,
+-                    color = MaterialTheme.colorScheme.primary
+-                )
+-                Spacer(modifier = Modifier.height(4.dp))
+-                Text(
+-                    text = stringResource(R.string.desc_prevent_overages),
+-                    style = MaterialTheme.typography.bodySmall,
+-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+-                    textAlign = TextAlign.Center
+-                )
+-            }
+-        }
+-    }
+-}
+-
+-@Composable
+-fun VpnMasterCard(
+-    checked: Boolean,
+-    onCheckedChange: (Boolean) -> Unit
+-) {
+-    Card(
+-        modifier = Modifier
+-            .fillMaxWidth()
+-            .padding(horizontal = 20.dp),
+-        shape = RoundedCornerShape(24.dp),
+-        colors = CardDefaults.cardColors(
+-            containerColor = MaterialTheme.colorScheme.surfaceContainer
+-        ),
+-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+-    ) {
+-        Row(
+-            modifier = Modifier
+-                .fillMaxWidth()
+-                .padding(20.dp),
+-            verticalAlignment = Alignment.CenterVertically
+-        ) {
+-            Box(
+-                modifier = Modifier
+-                    .size(44.dp)
+-                    .background(
+-                        color = if (checked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+-                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.06f),
+-                        shape = RoundedCornerShape(12.dp)
+-                    ),
+-                contentAlignment = Alignment.Center
+-            ) {
+-                Icon(
+-                    imageVector = Icons.Rounded.Security,
+-                    contentDescription = null,
+-                    tint = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+-                    modifier = Modifier.size(22.dp)
+-                )
+-            }
+-
+-            Spacer(modifier = Modifier.width(16.dp))
+-
+-            Column(modifier = Modifier.weight(1f)) {
+-                Text(
+-                    text = stringResource(R.string.label_block_apps),
+-                    style = MaterialTheme.typography.titleMedium,
+-                    fontWeight = FontWeight.Bold,
+-                    color = MaterialTheme.colorScheme.onSurface
+-                )
+-                Spacer(modifier = Modifier.height(2.dp))
+-                Text(
+-                    text = stringResource(R.string.desc_block_apps),
+-                    style = MaterialTheme.typography.bodySmall,
+-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+-                )
+-            }
+-
+-            Spacer(modifier = Modifier.width(16.dp))
+-
+-            Switch(
+-                checked = checked,
+-                onCheckedChange = onCheckedChange,
+-                colors = SwitchDefaults.colors(
+-                    checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+-                    checkedTrackColor = MaterialTheme.colorScheme.primary,
+-                    uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+-                    uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+-                ),
+-                modifier = Modifier.scale(0.8f)
+-            )
+-        }
+-    }
+-}
+-
+-@Composable
+ fun EmptyAppLimitsPlaceholder(
+     onAddClick: () -> Unit
+ ) {
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/PerformanceModeSection.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/PerformanceModeSection.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/PerformanceModeSection.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/PerformanceModeSection.kt	2026-11-01 07:59:47.464388223 +0000
+@@ -0,0 +1,178 @@
++// Performance mode: while a chosen game is on screen (and only on mobile data) the other apps are cut off.
++package com.ray.flowmeter.ui.screens
++
++import android.content.Context
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.rounded.Close
++import androidx.compose.material3.Card
++import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.collectAsState
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.dp
++import com.ray.flowmeter.R
++import com.ray.flowmeter.data.PerformanceModeStore
++import com.ray.flowmeter.ui.viewmodels.AppLimitsViewModel
++
++private fun appLabel(context: Context, pkg: String): String = try {
++    val pm = context.packageManager
++    pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
++} catch (_: Exception) {
++    pkg
++}
++
++@Composable
++fun PerformanceModeSection(viewModel: AppLimitsViewModel) {
++    val context = LocalContext.current
++    remember { PerformanceModeStore.init(context) }
++    val armed by PerformanceModeStore.armed.collectAsState()
++    val active by PerformanceModeStore.active.collectAsState()
++    val games by PerformanceModeStore.games.collectAsState()
++    val exceptions by PerformanceModeStore.exceptions.collectAsState()
++    var picking by remember { mutableStateOf<String?>(null) }
++
++    val status = when {
++        active -> stringResource(R.string.perf_status_active)
++        armed -> stringResource(R.string.perf_status_armed)
++        else -> stringResource(R.string.perf_status_off)
++    }
++
++    Card(
++        modifier = Modifier.fillMaxWidth(),
++        shape = RoundedCornerShape(20.dp),
++        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
++    ) {
++        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                Column(modifier = Modifier.weight(1f)) {
++                    Text(
++                        stringResource(R.string.perf_title),
++                        style = MaterialTheme.typography.titleMedium,
++                        fontWeight = FontWeight.SemiBold,
++                    )
++                    Text(
++                        status,
++                        style = MaterialTheme.typography.bodySmall,
++                        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
++                    )
++                }
++                Switch(checked = armed, onCheckedChange = { PerformanceModeStore.setArmed(it) })
++            }
++            Spacer(Modifier.height(8.dp))
++            Text(
++                stringResource(R.string.perf_hint),
++                style = MaterialTheme.typography.bodySmall,
++                color = MaterialTheme.colorScheme.onSurfaceVariant,
++            )
++            Spacer(Modifier.height(12.dp))
++            PerformanceAppList(
++                title = stringResource(R.string.perf_games),
++                empty = stringResource(R.string.perf_games_empty),
++                packages = games,
++                onAdd = {
++                    viewModel.loadInstalledApps()
++                    picking = "games"
++                },
++                onRemove = { PerformanceModeStore.setGames(games - it) },
++            )
++            Spacer(Modifier.height(8.dp))
++            PerformanceAppList(
++                title = stringResource(R.string.perf_exceptions),
++                empty = stringResource(R.string.perf_exceptions_empty),
++                packages = exceptions,
++                onAdd = {
++                    viewModel.loadInstalledApps()
++                    picking = "exceptions"
++                },
++                onRemove = { PerformanceModeStore.setExceptions(exceptions - it) },
++            )
++        }
++    }
++
++    when (picking) {
++        "games" -> BlockedAppsPickerDialog(
++            title = stringResource(R.string.perf_pick_games),
++            apps = viewModel.installedApps.filter { it.packageName !in games },
++            onDismiss = { picking = null },
++            onConfirm = { chosen ->
++                PerformanceModeStore.setGames(games + chosen.map { it.packageName })
++                picking = null
++            },
++        )
++        "exceptions" -> BlockedAppsPickerDialog(
++            title = stringResource(R.string.perf_pick_exceptions),
++            apps = viewModel.installedApps.filter { it.packageName !in exceptions },
++            onDismiss = { picking = null },
++            onConfirm = { chosen ->
++                PerformanceModeStore.setExceptions(exceptions + chosen.map { it.packageName })
++                picking = null
++            },
++        )
++    }
++}
++
++@Composable
++private fun PerformanceAppList(
++    title: String,
++    empty: String,
++    packages: Set<String>,
++    onAdd: () -> Unit,
++    onRemove: (String) -> Unit,
++) {
++    val context = LocalContext.current
++    Row(verticalAlignment = Alignment.CenterVertically) {
++        Text(
++            title,
++            style = MaterialTheme.typography.labelLarge,
++            fontWeight = FontWeight.Bold,
++            color = MaterialTheme.colorScheme.primary,
++            modifier = Modifier.weight(1f),
++        )
++        TextButton(onClick = onAdd) { Text(stringResource(R.string.btn_add_blocked_app)) }
++    }
++    if (packages.isEmpty()) {
++        Text(empty, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
++    } else {
++        packages.sorted().forEach { pkg ->
++            Row(
++                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
++                AppIconCircle(pkg, size = 36.dp)
++                Spacer(Modifier.width(12.dp))
++                Text(
++                    appLabel(context, pkg),
++                    modifier = Modifier.weight(1f),
++                    maxLines = 1,
++                    overflow = TextOverflow.Ellipsis,
++                )
++                IconButton(onClick = { onRemove(pkg) }) {
++                    Icon(Icons.Rounded.Close, contentDescription = null)
++                }
++            }
++        }
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/SettingsScreen.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/SettingsScreen.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/SettingsScreen.kt	2026-11-01 07:59:47.449838662 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/SettingsScreen.kt	2026-11-01 07:59:47.464279488 +0000
+@@ -17,6 +17,8 @@
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.rounded.*
+ import androidx.compose.material3.*
++import androidx.compose.material.icons.rounded.FileDownload
++import androidx.compose.material.icons.rounded.FileUpload
+ import androidx.compose.runtime.*
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.graphics.Color
+@@ -44,6 +46,7 @@
+     modifier: Modifier = Modifier,
+ ) {
+     val context = LocalContext.current
++    val backup = rememberBackupActions()
+ 
+     val notificationPermissionLauncher = rememberLauncherForActivityResult(
+         contract = ActivityResultContracts.RequestPermission()
+@@ -529,23 +532,16 @@
+                 }
+             )
+             SettingsItem(
+-                icon = Icons.Rounded.CloudDownload,
+-                title = stringResource(R.string.settings_auto_check_updates),
+-                subtitle = stringResource(R.string.settings_auto_check_updates_desc),
+-                trailingContent = {
+-                    Switch(
+-                        checked = checkUpdatesAutomatically,
+-                        onCheckedChange = { viewModel.setCheckUpdatesAutomatically(it) },
+-                        colors = switchColors,
+-                        thumbContent = { thumbContent(checkUpdatesAutomatically) }
+-                    )
+-                }
++                icon = Icons.Rounded.FileUpload,
++                title = stringResource(R.string.settings_backup_title),
++                subtitle = stringResource(R.string.settings_backup_desc),
++                onClick = backup.export
+             )
+             SettingsItem(
+-                icon = Icons.Rounded.Update,
+-                title = stringResource(R.string.settings_check_updates),
+-                subtitle = stringResource(R.string.settings_check_updates_desc),
+-                onClick = onCheckForUpdates
++                icon = Icons.Rounded.FileDownload,
++                title = stringResource(R.string.settings_restore_title),
++                subtitle = stringResource(R.string.settings_restore_desc),
++                onClick = backup.restore
+             )
+             SettingsItem(
+                 icon = Icons.Rounded.Info,
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/screens/WidgetsScreen.kt b/app/src/main/java/com/ray/flowmeter/ui/screens/WidgetsScreen.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/screens/WidgetsScreen.kt	2026-11-01 07:59:47.449983462 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/screens/WidgetsScreen.kt	2026-11-01 07:59:47.464302306 +0000
+@@ -189,7 +189,6 @@
+                             onClick = { showUpdateIntervalDialog = true }
+                         )
+ 
+-
+                         if (showUpdateIntervalDialog) {
+                             WidgetUpdateIntervalDialog(
+                                 currentInterval = widgetUpdateInterval,
+@@ -701,50 +700,6 @@
+     }
+ }
+ 
+-@Composable
+-fun BadgePreview(
+-    text: String,
+-    icon: ImageVector,
+-    tintColor: Color
+-) {
+-    Row(
+-        modifier = Modifier
+-            .background(
+-                color = tintColor.copy(alpha = 0.08f),
+-                shape = RoundedCornerShape(12.dp)
+-            )
+-            .border(
+-                width = 1.dp,
+-                color = tintColor.copy(alpha = 0.2f),
+-                shape = RoundedCornerShape(12.dp)
+-            )
+-            .padding(horizontal = 10.dp, vertical = 6.dp),
+-        verticalAlignment = Alignment.CenterVertically,
+-        horizontalArrangement = Arrangement.Center
+-    ) {
+-        Icon(
+-            imageVector = icon,
+-            contentDescription = null,
+-            tint = tintColor,
+-            modifier = Modifier.size(12.dp)
+-        )
+-        Spacer(modifier = Modifier.width(6.dp))
+-        Text(
+-            text = text,
+-            style = MaterialTheme.typography.labelMedium,
+-            fontWeight = FontWeight.Bold,
+-            color = tintColor
+-        )
+-    }
+-}
+-
+-private fun triggerWidgetUpdate(context: Context) {
+-    val intent = Intent(DailyUsageWidget.ACTION_UPDATE_WIDGET).apply {
+-        setPackage(context.packageName)
+-    }
+-    context.sendBroadcast(intent)
+-}
+-
+ private fun pinWidget(context: Context, providerClass: Class<out AppWidgetProvider>) {
+     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+         val appWidgetManager = context.getSystemService(AppWidgetManager::class.java)
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/theme/ThemeTransition.kt b/app/src/main/java/com/ray/flowmeter/ui/theme/ThemeTransition.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/theme/ThemeTransition.kt	2026-11-01 07:59:47.450192554 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/theme/ThemeTransition.kt	2026-11-01 07:59:47.464452099 +0000
+@@ -68,9 +68,6 @@
+             ZOOM
+         )
+ 
+-        fun fromKey(key: String?): ThemeTransitionKind {
+-            return entries.find { it.key.equals(key, ignoreCase = true) } ?: CIRCULAR_REVEAL
+-        }
+     }
+ }
+ 
+diff -ruN a/app/src/main/java/com/ray/flowmeter/ui/viewmodels/AppLimitsViewModel.kt b/app/src/main/java/com/ray/flowmeter/ui/viewmodels/AppLimitsViewModel.kt
+--- a/app/src/main/java/com/ray/flowmeter/ui/viewmodels/AppLimitsViewModel.kt	2026-11-01 07:59:47.450385486 +0000
++++ b/app/src/main/java/com/ray/flowmeter/ui/viewmodels/AppLimitsViewModel.kt	2026-11-01 07:59:47.464528371 +0000
+@@ -320,47 +320,6 @@
+         }
+     }
+ 
+-    fun addAppLimit(
+-        packageName: String, 
+-        appName: String, 
+-        limitBytes: Long,
+-        limitType: String = "daily",
+-        networkType: String = "both",
+-        wifiLimitBytes: Long = 0L,
+-        mobileLimitBytes: Long = 0L,
+-    ) {
+-        viewModelScope.launch {
+-            val existing = repository.getAppLimit(packageName)
+-            val isWifiOver = (networkType == "both" && wifiLimitBytes == 0L) || (networkType == "wifi" && limitBytes == 0L)
+-            val isMobileOver = (networkType == "both" && mobileLimitBytes == 0L) || (networkType == "mobile" && limitBytes == 0L)
+-            val isBlocked = (networkType != "both" && limitBytes == 0L) || (networkType == "both" && isWifiOver && isMobileOver)
+-
+-            val newLimit = AppLimit(
+-                packageName = packageName,
+-                appName = appName,
+-                dataLimit = limitBytes,
+-                limitType = limitType,
+-                networkType = networkType,
+-                wifiDataLimit = wifiLimitBytes,
+-                mobileDataLimit = mobileLimitBytes,
+-                currentUsage = existing?.currentUsage ?: 0L,
+-                currentWifiUsage = existing?.currentWifiUsage ?: 0L,
+-                currentMobileUsage = existing?.currentMobileUsage ?: 0L,
+-                isBlocked = isBlocked,
+-                isWifiBlocked = isWifiOver,
+-                isMobileBlocked = isMobileOver,
+-                isEnabled = existing?.isEnabled ?: true,
+-                isAlwaysBlocked = false,
+-            )
+-
+-            if (existing == null) {
+-                repository.insert(newLimit)
+-            } else {
+-                repository.update(newLimit)
+-            }
+-        }
+-    }
+-
+     fun addAppLimits(limits: List<AppLimit>) {
+         viewModelScope.launch {
+             limits.forEach { limit ->
+@@ -377,7 +336,11 @@
+                     isWifiBlocked = isWifiOver,
+                     isMobileBlocked = isMobileOver,
+                     isEnabled = existing?.isEnabled ?: true,
+-                    isAlwaysBlocked = false,
++                    isAlwaysBlocked = existing?.isAlwaysBlocked ?: limit.isAlwaysBlocked,
++                    scheduleEnabled = existing?.scheduleEnabled ?: limit.scheduleEnabled,
++                    scheduleDays = existing?.scheduleDays ?: limit.scheduleDays,
++                    scheduleStartMin = existing?.scheduleStartMin ?: limit.scheduleStartMin,
++                    scheduleEndMin = existing?.scheduleEndMin ?: limit.scheduleEndMin,
+                 )
+ 
+                 if (existing == null) {
+@@ -399,12 +362,50 @@
+                 isBlocked = isBlocked,
+                 isWifiBlocked = isWifiOver || appLimit.isWifiBlocked,
+                 isMobileBlocked = isMobileOver || appLimit.isMobileBlocked,
+-                isAlwaysBlocked = false,
++                isAlwaysBlocked = appLimit.isAlwaysBlocked,
+             )
+             repository.update(updated)
+         }
+     }
+ 
++    // Fully blocks the given apps (no internet at all) using an "unlimited" data limit plus the always-blocked flag.
++    fun blockAppsCompletely(apps: List<AppInfo>) {
++        viewModelScope.launch {
++            val unlimited = 1024L * 1024L * 1024L * 1024L
++            apps.forEach { app ->
++                val existing = repository.getAppLimit(app.packageName)
++                if (existing == null) {
++                    repository.insert(
++                        AppLimit(
++                            packageName = app.packageName,
++                            appName = app.name,
++                            dataLimit = unlimited,
++                            limitType = "daily",
++                            networkType = "both",
++                            wifiDataLimit = unlimited,
++                            mobileDataLimit = unlimited,
++                            isAlwaysBlocked = true,
++                        )
++                    )
++                } else {
++                    repository.update(existing.copy(isAlwaysBlocked = true, isEnabled = true))
++                }
++            }
++        }
++    }
++
++    // Removes the full block; entries that only existed for the block are deleted.
++    fun unblockApp(limit: AppLimit) {
++        viewModelScope.launch {
++            val unlimited = 1024L * 1024L * 1024L * 1024L
++            if (limit.dataLimit >= unlimited && !limit.scheduleEnabled) {
++                repository.delete(limit)
++            } else {
++                repository.update(limit.copy(isAlwaysBlocked = false))
++            }
++        }
++    }
++
+     fun removeAppLimit(appLimit: AppLimit) {
+         viewModelScope.launch {
+             repository.delete(appLimit)
+diff -ruN a/app/src/main/java/com/ray/flowmeter/utils/AppUpdateHelper.kt b/app/src/main/java/com/ray/flowmeter/utils/AppUpdateHelper.kt
+--- a/app/src/main/java/com/ray/flowmeter/utils/AppUpdateHelper.kt	2026-11-01 07:59:47.450740356 +0000
++++ b/app/src/main/java/com/ray/flowmeter/utils/AppUpdateHelper.kt	2026-11-01 07:59:47.464626024 +0000
+@@ -1,25 +1,9 @@
+ package com.ray.flowmeter.utils
+ 
+ import android.content.Context
+-import android.content.pm.PackageManager
+ import android.os.Build
+-import android.util.Log
+ import com.google.android.play.core.appupdate.AppUpdateInfo
+-import com.google.android.play.core.appupdate.AppUpdateManagerFactory
+-import com.google.android.play.core.install.model.AppUpdateType
+-import com.google.android.play.core.install.model.UpdateAvailability
+-import com.ray.flowmeter.BuildConfig
+ import com.ray.flowmeter.data.UserPreferencesRepository
+-import kotlinx.coroutines.CoroutineScope
+-import kotlinx.coroutines.Dispatchers
+-import kotlinx.coroutines.flow.first
+-import kotlinx.coroutines.launch
+-import kotlinx.coroutines.withContext
+-import kotlinx.serialization.Serializable
+-import kotlinx.serialization.json.Json
+-import okhttp3.OkHttpClient
+-import okhttp3.Request
+-import java.io.IOException
+ 
+ sealed class UpdateResult {
+     object NoUpdateAvailable : UpdateResult()
+@@ -28,13 +12,7 @@
+     data class Error(val exception: Throwable) : UpdateResult()
+ }
+ 
+-@Serializable
+-private data class GitHubRelease(
+-    val tag_name: String,
+-    val html_url: String,
+-    val body: String? = null
+-)
+-
++// Updates are disabled on purpose: this build never contacts GitHub or Google Play.
+ class AppUpdateHelper(
+     private val context: Context,
+     private val preferencesRepository: UserPreferencesRepository
+@@ -44,96 +22,7 @@
+         forceGitHubCheck: Boolean = false,
+         callback: (UpdateResult) -> Unit
+     ) {
+-        val installer = getInstallerPackageName(context)
+-        Log.d("AppUpdateHelper", "Detected installer package: $installer")
+-
+-        if (installer == "com.android.vending" && !forceGitHubCheck) {
+-            checkPlayStore(callback)
+-        } else {
+-            checkGitHub(callback)
+-        }
+-    }
+-
+-    private fun checkPlayStore(callback: (UpdateResult) -> Unit) {
+-        try {
+-            val appUpdateManager = AppUpdateManagerFactory.create(context)
+-            appUpdateManager.appUpdateInfo.addOnSuccessListener { appUpdateInfo ->
+-                if (appUpdateInfo.updateAvailability() == UpdateAvailability.UPDATE_AVAILABLE &&
+-                    appUpdateInfo.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)
+-                ) {
+-                    callback(UpdateResult.PlayStoreUpdateAvailable(appUpdateInfo))
+-                } else {
+-                    callback(UpdateResult.NoUpdateAvailable)
+-                }
+-            }.addOnFailureListener { e ->
+-                Log.e("AppUpdateHelper", "Play Store update check failed", e)
+-                callback(UpdateResult.Error(e))
+-            }
+-        } catch (e: Exception) {
+-            Log.e("AppUpdateHelper", "Play Store AppUpdateManager instantiation failed", e)
+-            callback(UpdateResult.Error(e))
+-        }
+-    }
+-
+-    private fun checkGitHub(callback: (UpdateResult) -> Unit) {
+-        CoroutineScope(Dispatchers.IO).launch {
+-            try {
+-                val client = OkHttpClient()
+-                val request = Request.Builder()
+-                    .url("https://api.github.com/repos/drrayy001/FlowBytes/releases/latest")
+-                    .header("User-Agent", "FlowBytes-Android-App")
+-                    .build()
+-
+-                client.newCall(request).execute().use { response ->
+-                    if (!response.isSuccessful) {
+-                        throw IOException("Server returned code ${response.code}")
+-                    }
+-                    val jsonStr = response.body.string()
+-                    val json = Json { ignoreUnknownKeys = true }
+-                    val release = json.decodeFromString<GitHubRelease>(jsonStr)
+-                    
+-                    val latestVersion = release.tag_name.trim().removePrefix("v")
+-                    val currentVersion = BuildConfig.VERSION_NAME
+-
+-                    Log.d("AppUpdateHelper", "GitHub version check: current=$currentVersion, latest=$latestVersion")
+-
+-                    if (isNewerVersion(currentVersion, latestVersion)) {
+-                        val ignored = preferencesRepository.ignoredUpdateVersion.first()
+-                        if (ignored != release.tag_name) {
+-                            withContext(Dispatchers.Main) {
+-                                callback(UpdateResult.GitHubUpdateAvailable(
+-                                    tag = release.tag_name,
+-                                    downloadUrl = release.html_url,
+-                                    releaseNotes = release.body
+-                                ))
+-                            }
+-                            return@launch
+-                        }
+-                    }
+-                    withContext(Dispatchers.Main) {
+-                        callback(UpdateResult.NoUpdateAvailable)
+-                    }
+-                }
+-            } catch (e: Exception) {
+-                Log.e("AppUpdateHelper", "GitHub update check failed", e)
+-                withContext(Dispatchers.Main) {
+-                    callback(UpdateResult.Error(e))
+-                }
+-            }
+-        }
+-    }
+-
+-    private fun isNewerVersion(current: String, latest: String): Boolean {
+-        val currentParts = current.split(".").mapNotNull { it.toIntOrNull() }
+-        val latestParts = latest.split(".").mapNotNull { it.toIntOrNull() }
+-        val length = maxOf(currentParts.size, latestParts.size)
+-        for (i in 0 until length) {
+-            val currVal = currentParts.getOrElse(i) { 0 }
+-            val latVal = latestParts.getOrElse(i) { 0 }
+-            if (latVal > currVal) return true
+-            if (latVal < currVal) return false
+-        }
+-        return false
++        callback(UpdateResult.NoUpdateAvailable)
+     }
+ 
+     internal fun getInstallerPackageName(context: Context): String? {
+diff -ruN a/app/src/main/java/com/ray/flowmeter/utils/BackgroundReasons.kt b/app/src/main/java/com/ray/flowmeter/utils/BackgroundReasons.kt
+--- a/app/src/main/java/com/ray/flowmeter/utils/BackgroundReasons.kt	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/ray/flowmeter/utils/BackgroundReasons.kt	2026-11-01 07:59:47.464674611 +0000
+@@ -0,0 +1,24 @@
++// Plain-language explanation of why a background usage alert was raised.
++package com.ray.flowmeter.utils
++
++import android.content.Context
++import com.ray.flowmeter.R
++
++object BackgroundReasons {
++    const val FLAG_SCREEN_OFF = 1L
++    const val FLAG_NOT_OPENED = 2L
++    const val FLAG_MOBILE = 4L
++
++    fun describe(context: Context, flags: Long, typicalBytes: Long, format: (Long) -> String): String {
++        val parts = ArrayList<String>()
++        if ((flags and FLAG_SCREEN_OFF) != 0L) parts.add(context.getString(R.string.reason_screen_off))
++        if ((flags and FLAG_NOT_OPENED) != 0L) parts.add(context.getString(R.string.reason_not_opened))
++        if (typicalBytes > 0L) {
++            parts.add(context.getString(R.string.reason_usually, format(typicalBytes)))
++        } else {
++            parts.add(context.getString(R.string.reason_no_history))
++        }
++        if ((flags and FLAG_MOBILE) != 0L) parts.add(context.getString(R.string.reason_mobile))
++        return parts.joinToString(" · ")
++    }
++}
+diff -ruN a/app/src/main/java/com/ray/flowmeter/utils/BitmapUtils.kt b/app/src/main/java/com/ray/flowmeter/utils/BitmapUtils.kt
+--- a/app/src/main/java/com/ray/flowmeter/utils/BitmapUtils.kt	2026-11-01 07:59:47.450966481 +0000
++++ b/app/src/main/java/com/ray/flowmeter/utils/BitmapUtils.kt	1970-01-01 00:00:00.000000000 +0000
+@@ -1,126 +0,0 @@
+-package com.ray.flowmeter.utils
+-
+-import android.content.res.Resources
+-import android.graphics.Bitmap
+-import android.graphics.BitmapFactory
+-import android.graphics.drawable.Drawable
+-import androidx.core.graphics.drawable.toBitmap
+-import java.io.InputStream
+-
+-/**
+- * Helper utility for decoding and downsampling Bitmaps using BitmapFactory.Options
+- * to reduce memory footprint and prevent OutOfMemoryErrors as recommended by Google Play Console.
+- */
+-object BitmapUtils {
+-
+-    /**
+-     * Calculates the sample size value as a power of two based on target width and height.
+-     */
+-    fun calculateInSampleSize(
+-        options: BitmapFactory.Options,
+-        reqWidth: Int,
+-        reqHeight: Int
+-    ): Int {
+-        val (height: Int, width: Int) = options.outHeight to options.outWidth
+-        var inSampleSize = 1
+-
+-        if (height > reqHeight || width > reqWidth) {
+-            val halfHeight: Int = height / 2
+-            val halfWidth: Int = width / 2
+-
+-            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+-                inSampleSize *= 2
+-            }
+-        }
+-        return inSampleSize
+-    }
+-
+-    /**
+-     * Decodes a bitmap resource with downsampling using BitmapFactory.Options.
+-     */
+-    fun decodeSampledBitmapFromResource(
+-        res: Resources,
+-        resId: Int,
+-        reqWidth: Int,
+-        reqHeight: Int
+-    ): Bitmap {
+-        return BitmapFactory.Options().run {
+-            inJustDecodeBounds = true
+-            BitmapFactory.decodeResource(res, resId, this)
+-
+-            inSampleSize = calculateInSampleSize(this, reqWidth, reqHeight)
+-            inJustDecodeBounds = false
+-            BitmapFactory.decodeResource(res, resId, this)
+-        }
+-    }
+-
+-    /**
+-     * Decodes a bitmap from a file path with downsampling.
+-     */
+-    fun decodeSampledBitmapFromFile(
+-        pathName: String,
+-        reqWidth: Int,
+-        reqHeight: Int
+-    ): Bitmap? {
+-        return BitmapFactory.Options().run {
+-            inJustDecodeBounds = true
+-            BitmapFactory.decodeFile(pathName, this)
+-
+-            inSampleSize = calculateInSampleSize(this, reqWidth, reqHeight)
+-            inJustDecodeBounds = false
+-            BitmapFactory.decodeFile(pathName, this)
+-        }
+-    }
+-
+-    /**
+-     * Decodes a bitmap from a byte array with downsampling.
+-     */
+-    fun decodeSampledBitmapFromByteArray(
+-        data: ByteArray,
+-        offset: Int = 0,
+-        length: Int = data.size,
+-        reqWidth: Int,
+-        reqHeight: Int
+-    ): Bitmap? {
+-        return BitmapFactory.Options().run {
+-            inJustDecodeBounds = true
+-            BitmapFactory.decodeByteArray(data, offset, length, this)
+-
+-            inSampleSize = calculateInSampleSize(this, reqWidth, reqHeight)
+-            inJustDecodeBounds = false
+-            BitmapFactory.decodeByteArray(data, offset, length, this)
+-        }
+-    }
+-
+-    /**
+-     * Decodes a bitmap from an InputStream supplier with downsampling.
+-     * Supplier is needed because the stream must be re-opened for the second decoding pass.
+-     */
+-    fun decodeSampledBitmapFromStream(
+-        inputStreamSupplier: () -> InputStream?,
+-        reqWidth: Int,
+-        reqHeight: Int
+-    ): Bitmap? {
+-        val options = BitmapFactory.Options().apply {
+-            inJustDecodeBounds = true
+-        }
+-        inputStreamSupplier()?.use { stream ->
+-            BitmapFactory.decodeStream(stream, null, options)
+-        } ?: return null
+-
+-        options.inSampleSize = calculateInSampleSize(options, reqWidth, reqHeight)
+-        options.inJustDecodeBounds = false
+-
+-        return inputStreamSupplier()?.use { stream ->
+-            BitmapFactory.decodeStream(stream, null, options)
+-        }
+-    }
+-}
+-
+-/**
+- * Extension function to safely convert a Drawable to a downsampled Bitmap
+- * of target dimensions (defaulting to 96x96 px for app icons).
+- */
+-fun Drawable.toDownsampledBitmap(width: Int = 96, height: Int = 96): Bitmap {
+-    return toBitmap(width = width, height = height)
+-}
+diff -ruN a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+--- a/app/src/main/res/values/strings.xml	2026-11-01 07:59:47.457589272 +0000
++++ b/app/src/main/res/values/strings.xml	2026-11-01 07:59:47.471459705 +0000
+@@ -491,4 +491,43 @@
+     <string name="unit_hours">Hours</string>
+     <string name="unit_min_short">Min</string>
+     <string name="unit_sec_short">Sec</string>
++    <string name="block_rules_title">Blocking rules</string>
++    <string name="block_schedule_title">Block on a schedule</string>
++    <string name="block_schedule_desc">Cuts internet only on the days and hours you choose.</string>
++    <string name="block_schedule_from">From %1$s</string>
++    <string name="block_schedule_to">Until %1$s</string>
++    <string name="block_schedule_note">If the end time is earlier than the start, the block runs overnight. Rules only apply while app blocking is turned on.</string>
++    <string name="label_blocked_apps">Apps without internet</string>
++    <string name="btn_add_blocked_app">Add</string>
++    <string name="msg_no_blocked_apps">No app is fully blocked.</string>
++    <string name="title_pick_apps_to_block">Choose apps to block</string>
++    <string name="label_blocked_subtitle">No internet at all</string>
++    <string name="label_background_usage">Background usage</string>
++    <string name="msg_no_alerts_background">No background usage alerts.</string>
++    <string name="notification_background_title">Unusual background usage</string>
++    <string name="notification_background_msg">%1$s used %2$s in the background. %3$s</string>
++    <string name="reason_screen_off">screen was off</string>
++    <string name="reason_not_opened">app not opened for hours</string>
++    <string name="reason_usually">usually about %1$s at this hour</string>
++    <string name="reason_no_history">no history yet for this hour</string>
++    <string name="reason_mobile">mobile data</string>
++    <string name="perf_title">Performance mode</string>
++    <string name="perf_status_off">Off</string>
++    <string name="perf_status_armed">Armed: waiting for one of your games to open</string>
++    <string name="perf_status_active">Active: other apps are cut off</string>
++    <string name="perf_hint">When a game from the list is on screen, every other app loses internet, except the exceptions. Works only on mobile data and needs app blocking turned on (shield).</string>
++    <string name="perf_games">Games</string>
++    <string name="perf_games_empty">No games added.</string>
++    <string name="perf_exceptions">Exceptions (never cut)</string>
++    <string name="perf_exceptions_empty">No exceptions.</string>
++    <string name="perf_pick_games">Choose games</string>
++    <string name="perf_pick_exceptions">Choose exceptions</string>
++    <string name="backup_saved">Configuration saved</string>
++    <string name="backup_failed">Could not save the configuration</string>
++    <string name="restore_done">Configuration restored (%1$d app limits)</string>
++    <string name="restore_failed">Could not read that file</string>
++    <string name="settings_backup_title">Save configuration</string>
++    <string name="settings_backup_desc">Export limits, schedules and performance mode to a file.</string>
++    <string name="settings_restore_title">Restore configuration</string>
++    <string name="settings_restore_desc">Load a configuration file saved before.</string>
+ </resources>
+diff -ruN a/app/src/main/res/values-es/strings.xml b/app/src/main/res/values-es/strings.xml
+--- a/app/src/main/res/values-es/strings.xml	2026-11-01 07:59:47.455091338 +0000
++++ b/app/src/main/res/values-es/strings.xml	2026-11-01 07:59:47.469153948 +0000
+@@ -458,4 +458,43 @@
+     <string name="unit_hours">Horas</string>
+     <string name="unit_min_short">Min</string>
+     <string name="unit_sec_short">Seg</string>
++    <string name="block_rules_title">Reglas de bloqueo</string>
++    <string name="block_schedule_title">Bloquear en un horario</string>
++    <string name="block_schedule_desc">Corta el internet solo los días y las horas que elijas.</string>
++    <string name="block_schedule_from">Desde las %1$s</string>
++    <string name="block_schedule_to">Hasta las %1$s</string>
++    <string name="block_schedule_note">Si la hora final es anterior a la inicial, el bloqueo sigue durante la noche. Las reglas solo funcionan con el bloqueo de apps activado.</string>
++    <string name="label_blocked_apps">Apps sin internet</string>
++    <string name="btn_add_blocked_app">Añadir</string>
++    <string name="msg_no_blocked_apps">Ninguna app está bloqueada del todo.</string>
++    <string name="title_pick_apps_to_block">Elige las apps a bloquear</string>
++    <string name="label_blocked_subtitle">Sin internet en absoluto</string>
++    <string name="label_background_usage">Consumo en segundo plano</string>
++    <string name="msg_no_alerts_background">No hay alertas de consumo en segundo plano.</string>
++    <string name="notification_background_title">Consumo raro en segundo plano</string>
++    <string name="notification_background_msg">%1$s usó %2$s en segundo plano. %3$s</string>
++    <string name="reason_screen_off">la pantalla estaba apagada</string>
++    <string name="reason_not_opened">app sin abrir hace horas</string>
++    <string name="reason_usually">normalmente gasta %1$s a esta hora</string>
++    <string name="reason_no_history">aún sin historial a esta hora</string>
++    <string name="reason_mobile">con datos móviles</string>
++    <string name="perf_title">Modo rendimiento</string>
++    <string name="perf_status_off">Apagado</string>
++    <string name="perf_status_armed">Armado: espera a que abras uno de tus juegos</string>
++    <string name="perf_status_active">Activo: las demás apps están sin internet</string>
++    <string name="perf_hint">Cuando un juego de la lista está en pantalla, todas las demás apps se quedan sin internet, menos las excepciones. Solo funciona con datos móviles y necesita el bloqueo de apps activado (escudo).</string>
++    <string name="perf_games">Juegos</string>
++    <string name="perf_games_empty">No hay juegos añadidos.</string>
++    <string name="perf_exceptions">Excepciones (nunca se cortan)</string>
++    <string name="perf_exceptions_empty">No hay excepciones.</string>
++    <string name="perf_pick_games">Elige los juegos</string>
++    <string name="perf_pick_exceptions">Elige las excepciones</string>
++    <string name="backup_saved">Configuración guardada</string>
++    <string name="backup_failed">No se pudo guardar la configuración</string>
++    <string name="restore_done">Configuración restaurada (%1$d límites de apps)</string>
++    <string name="restore_failed">No se pudo leer ese archivo</string>
++    <string name="settings_backup_title">Guardar configuración</string>
++    <string name="settings_backup_desc">Exporta límites, horarios y modo rendimiento a un archivo.</string>
++    <string name="settings_restore_title">Restaurar configuración</string>
++    <string name="settings_restore_desc">Carga un archivo de configuración guardado antes.</string>
+ </resources>
